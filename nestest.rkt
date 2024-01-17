@@ -7,7 +7,7 @@
 (define (create-nestest-bytes)
   (let* ([port (open-input-file "nestest.nes")]
          [bytes (read-bytes 16 port)] ; discard first 16 bytes (the header), I'll deal with this later
-         [bytes (read-bytes #x4000 port)])
+         [bytes (read-bytes #x5000 port)])
     (close-input-port port)
     (if (eof-object? bytes)
         (error "nestest.nes did not contain enough bytes")

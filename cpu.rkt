@@ -981,9 +981,12 @@
      ; Make sure the first instruction is where it should be
      (check-equal? (cpu-read #xC000) #x4C)
      (check-equal? (cpu-read #x8000) #x4C)
+     ; Disable log for speed
+     (define log? #t)
      ; Run until PC reaches last line of known good log
      (let loop ()
-       (display (~h .PC 4))
+       (when log?
+         (display (~h .PC 4)))
        (let* ([disassembly-port (open-output-string)]
               [orig-PC PC]
               [bytes (get-instruction-bytes orig-PC .read)]
@@ -1001,21 +1004,6 @@
          (define log-item (car good-log))
          (set! good-log (cdr good-log))
          (define expected-disassembly (third log-item))
-         (display* "  " (~a byte-string #:width 10))
-         ; I don't understand what the "good log" means when it says something like
-         ;     STA $01 = 00
-         ; What does the 00 indicate here? It is neither the current nor previous value of A...
-         ; Oh well, let's just send these to the error port and continue on.
-         (display (~a disassembly #:width 20) (if (equal? disassembly expected-disassembly)
-                                                  (current-output-port)
-                                                  (current-error-port)))
-         (display* " " a-string
-                   " " x-string
-                   " " y-string
-                   " " p-string
-                   " " sp-string
-                   " " cyc-string)
-         (displayln "")
          (define all-good
            (check-all-equal? [(~h orig-PC 4) (first log-item)]
                              [byte-string (second log-item)]
@@ -1025,6 +1013,22 @@
                              [p-string (seventh log-item)]
                              [sp-string (eighth log-item)]
                              [cyc-string (tenth log-item)]))
+         (when (or log? (not all-good))
+           (display* "  " (~a byte-string #:width 10))
+           ; I don't understand what the "good log" means when it says something like
+           ;     STA $01 = 00
+           ; What does the 00 indicate here? It is neither the current nor previous value of A...
+           ; Oh well, let's just send these to the error port and continue on.
+           (display (~a disassembly #:width 20) (if (equal? disassembly expected-disassembly)
+                                                    (current-output-port)
+                                                    (current-error-port)))
+           (display* " " a-string
+                     " " x-string
+                     " " y-string
+                     " " p-string
+                     " " sp-string
+                     " " cyc-string)
+           (displayln ""))
          (when (and all-good
                     (not (fx= .PC #xC66E)))
            (loop))))))
