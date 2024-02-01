@@ -31,18 +31,18 @@
 (define-syntax-rule (get-branch-dest .src .offset)
   (let* ([src .src]
          [offset .offset]
-         [sum (fx+ src offset)])
-    (if (fx< offset 128)
-        sum
-        (fxior (fxand #xFF00 src)
-               (fxand #x00FF sum)))))
+         [offset (if (fx= 0 (fxand #x80 offset))
+                     offset
+                     (fxior #xFF00 offset))])
+    (fxand #xFFFF (fx+ src offset))))
 
 (module+ test
   (require typed/rackunit)
 
   ; Simple example with positive branch
   ; log item: C9F8  F0 07     BEQ $CA01                       A:80 X:00 Y:00 P:A5 SP:FB PPU:  6,174 CYC:740
-  (check-equal? #xCA01 (get-branch-dest #xC9FA #x07))
+  (check-equal? (get-branch-dest #xC9FA #x07)
+                #xCA01)
 
   ; Negative branch (E0 should subtract)
   ; log item: C72A  D0 E0     BNE $C70C                       A:CB X:04 Y:4F P:6D SP:F1 PPU:129,303 CYC:14764
@@ -50,7 +50,8 @@
   ;   E0           1110 0000 (offset)
   ; C80C 1100 1000 0000 1100 (sum)
   ; C70C 1100 0111 0000 1100 (desired, pc.hi|sum.lo)
-  (check-equal? #xC70C (get-branch-dest #xC72C #xE0))
+  (check-equal? (get-branch-dest #xC72C #xE0)
+                #xC70C)
   ; Hmm, it could also be calculated as
   #;(fx- pc (fx- #x100 offset))
   #;(fx- #xC72C (fx- #x100 #xE0))
@@ -62,5 +63,10 @@
   ;   02           0000 0010 (offset)
   ; F300 1111 0011 0000 0000 (sum)
   ; F300 1111 0011 0000 0000 (desired)
-  (check-equal? #xF300 (get-branch-dest #xF2FE #x02))
+  (check-equal? (get-branch-dest #xF2FE #x02)
+                #xF300)
+
+  ; Bug found during PPU development:
+  (check-equal? (get-branch-dest #xF240 #xBB)
+                #xF1FB)
   )

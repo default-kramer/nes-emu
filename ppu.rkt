@@ -1,5 +1,36 @@
 #lang typed/racket
 
+(provide
+ ; Functionality, as macros:
+ clock
+ reset
+ ; Parameters
+ ppu-read
+ ppu-write
+ cpu-read ; should rename to `read-registers` or something
+ cpu-write ; should rename to `write-registers` or something
+ compose-pixel! ; cycle scanline bg-palette bg-pixel -> Any
+ scanline
+ cycle
+ ppuctrl
+ ppumask
+ ppustatus
+ fine-x
+ ppu-data-buffer
+ frame-complete?
+ nmi?
+ address-latch?
+ bg-shifter-pattern-lo
+ bg-shifter-pattern-hi
+ bg-shifter-attrib-lo
+ bg-shifter-attrib-hi
+ bg-next-tile-lsb
+ bg-next-tile-msb
+ bg-next-tile-id
+ bg-next-tile-attrib
+ vram-addr
+ tram-addr)
+
 (require "ufx.rkt"
          "util.rkt"
          (for-syntax racket/fixnum))
@@ -12,8 +43,10 @@
   ppuctrl ; 8 bits of flags
   ppustatus ; 3 bits of flags (and 5 unused bits)
   fine-x ; uint8
+  ppu-data-buffer ; uint8
   frame-complete? ; boolean
   nmi? ; boolean
+  address-latch? ; boolean
 
   ; Background rendering
   bg-next-tile-lsb ; uint8
@@ -26,6 +59,8 @@
   bg-shifter-attrib-hi ; uint16
 
   ppu-read ; (-> Fixnum Byte)
+  ppu-write ; (-> Fixnum Byte Void)
+  compose-pixel!
 
   vram-addr ; loopy, uint16
   tram-addr ; loopy, uint16
@@ -45,10 +80,16 @@
   [#b00100000 /sprite-size?]
   [#b00010000 /pattern-background?]
   [#b00001000 /pattern-sprite?]
-  [#b00000100 /increment-mode?])
+  [#b00000100 /increment-mode?]
+  ; dumb names here to avoid clash with loopy nametable-x and y:
+  [#b00000010 /nty?]
+  [#b00000001 /ntx?])
 
 ; Masks for PPUMASK
 (define-maskers
+  [#b00000001 /grayscale?]
+  [#b00000010 /render-background-left?]
+  [#b00000100 /render-sprites-left?]
   [#b00001000 /render-bg?]
   [#b00010000 /render-sprites?])
 
@@ -192,7 +233,7 @@
         ; OLC: "Odd Frame" cycle skip
         (SET! cycle 1))
       (when (and (ufx= -1 scanline)
-                 (ufx= -1 cycle))
+                 (ufx= 1 cycle))
         ; OLC: Effectively start of new frame, so clear vertical blank flag
         (/vblank? ppustatus #:set! 0))
       (clock-main-loop)
@@ -231,7 +272,7 @@
                [bg-pal1 (ufxand bg-shifter-attrib-hi bit-mux)])
           (set! bg-pixel (ufxand #xFF (ufxior p0-pixel (ufxlshift p1-pixel 1))))
           (set! bg-palette (ufxand #xFF (ufxior bg-pal0 (ufxlshift bg-pal1 1))))))
-      #;(println (list "TODO write pixel:" bg-pixel bg-palette scanline cycle)))
+      (compose-pixel! cycle scanline bg-palette bg-pixel))
 
     ; Advance renderer
     (SET! cycle (ufx+ 1 cycle))
@@ -240,12 +281,106 @@
       (SET! scanline (ufx+ 1 scanline))
       (when (ufx>= scanline 261)
         (SET! scanline -1)
-        (SET! frame-complete? #t)))))
+        (SET! frame-complete? #t)))
+
+    ; Nothing interesting to return
+    (void)))
+
+(define-syntax-rule (reset)
+  (begin (SET! fine-x 0)
+         (SET! ppu-data-buffer 0)
+         (SET! scanline 0)
+         (SET! cycle 0)
+         (SET! bg-next-tile-id 0)
+         (SET! bg-next-tile-attrib 0)
+         (SET! bg-next-tile-lsb 0)
+         (SET! bg-next-tile-msb 0)
+         (SET! bg-shifter-pattern-lo 0)
+         (SET! bg-shifter-pattern-hi 0)
+         (SET! bg-shifter-attrib-lo 0)
+         (SET! bg-shifter-attrib-hi 0)
+         (SET! ppustatus 0)
+         (SET! ppumask 0)
+         (SET! ppuctrl 0)
+         (SET! vram-addr 0)
+         (SET! tram-addr 0)))
+
+(define-syntax-rule (increment-vram-addr)
+  (let ([increment (if (has-any-flag? ppuctrl /increment-mode?)
+                       32
+                       1)])
+    (SET! vram-addr (ufx+ increment vram-addr))))
+
+
+; see olc2C02::cpuWrite
+; see https://www.nesdev.org/wiki/PPU_registers
+(define-syntax-rule (cpu-write addr in-value)
+  (let ([value in-value])
+    (case (ufxand 7 addr)
+      [(0)
+       (SET! ppuctrl value)
+       (/ntx? ppuctrl #:set! (/nametable-x tram-addr #:shifted))
+       (/nty? ppuctrl #:set! (/nametable-y tram-addr #:shifted))]
+      [(1)
+       (SET! ppumask value)]
+      [(2) ; ppustatus is not writable
+       (void)]
+      [(3)
+       #;(error "TODO write OAM Address")
+       (void)]
+      [(4)
+       #;(error "TODO write OAM Data")
+       (void)]
+      [(5) ; PPUSCROLL
+       (if (not address-latch?)
+           (begin (SET! fine-x (ufxand 7 value))
+                  (/coarse-x tram-addr #:set! (ufxrshift value 3))
+                  (SET! address-latch? #t))
+           (begin (/fine-y tram-addr #:set! (ufxand 7 value))
+                  (/coarse-y tram-addr #:set! (ufxrshift value 3))
+                  (SET! address-latch? #f)))]
+      [(6)
+       (if (not address-latch?)
+           (begin (SET! tram-addr (ufxior (ufxand #xFF tram-addr)
+                                          (ufxlshift (ufxand #x3F value) 8)))
+                  (SET! address-latch? #t)
+                  #;(println (list "6.1" value vram-addr tram-addr)))
+           (begin (SET! tram-addr (ufxior value (ufxand #xFF00 tram-addr)))
+                  (SET! vram-addr tram-addr)
+                  (SET! address-latch? #f)
+                  #;(println (list "6.2" value vram-addr tram-addr))))]
+      [(7)
+       ; Note that ppu-write can depend on the mapper/cartridge
+       (ppu-write vram-addr value)
+       (increment-vram-addr)])
+    (void)))
+
+(define-syntax-rule (cpu-read addr)
+  (case (ufxand 7 addr)
+    [(2)
+     (let ([result : Byte (ufxior (ufxand #xE0 ppustatus)
+                                  (ufxand #x1F ppu-data-buffer))])
+       (/vblank? ppustatus #:set! 0)
+       (SET! address-latch? #f)
+       result)]
+    [(7)
+     ; OLC: Reads from the NameTable ram get delayed one cycle
+     (let ([result : Byte ppu-data-buffer])
+       (SET! ppu-data-buffer (ppu-read vram-addr))
+       ; OLC: However, if the address was in the palette range, the data is not delayed, so it returns immediately
+       (when (ufx>= vram-addr #x3F00)
+         (set! result ppu-data-buffer))
+       (increment-vram-addr)
+       result)]
+    [else
+     0]))
 
 (module+ test
   (require typed/rackunit
            racket/stxparam)
   (define randomizer : Fixnum (random 9999))
+  (define (.ppu-write [addr : Fixnum] [value : Byte])
+    (void))
   (: .ppu-read (-> Fixnum Byte))
   (define (.ppu-read addr)
     ; Do just enough to prevent unrealistic optimizations and/or branch predictions
@@ -253,15 +388,23 @@
     (ufxand 255 randomizer))
   (syntax-parameterize ([ppu-read (lambda (stx)
                                     (syntax-case stx ()
-                                      [(_ arg ...) #'(.ppu-read arg ...)]))])
+                                      [(_ arg ...) #'(.ppu-read arg ...)]))]
+                        [ppu-write (lambda (stx)
+                                     (syntax-case stx ()
+                                       [(_ arg ...) #'(.ppu-write arg ...)]))]
+                        [compose-pixel! (lambda (stx)
+                                          (syntax-case stx ()
+                                            [_ #'(void)]))])
     (let ([.scanline : Fixnum 0]
           [.cycle : Fixnum 0] ; int16
           [.ppuctrl : Fixnum 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
           [.ppumask : Fixnum 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
           [.ppustatus : Fixnum 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
           [.fine-x : Byte 0]
+          [.ppu-data-buffer : Byte 0] ; uint8
           [.frame-complete? : Boolean #f]
           [.nmi? : Boolean #f]
+          [.address-latch? : Boolean #f]
           [.bg-shifter-pattern-lo : Fixnum 0] ; uint16
           [.bg-shifter-pattern-hi : Fixnum 0] ; uint16
           [.bg-shifter-attrib-lo : Fixnum 0] ; uint16
@@ -274,25 +417,31 @@
           [.tram-addr : Fixnum 0]
           )
       (parameterize-syntax-ids
-       ([scanline .scanline]
-        [cycle .cycle]
-        [ppuctrl .ppuctrl]
-        [ppumask .ppumask]
-        [ppustatus .ppustatus]
-        [fine-x .fine-x]
-        [frame-complete? .frame-complete?]
-        [nmi? .nmi?]
-        [bg-shifter-pattern-lo .bg-shifter-pattern-lo]
-        [bg-shifter-pattern-hi .bg-shifter-pattern-hi]
-        [bg-shifter-attrib-lo .bg-shifter-attrib-lo]
-        [bg-shifter-attrib-hi .bg-shifter-attrib-hi]
-        [bg-next-tile-lsb .bg-next-tile-lsb]
-        [bg-next-tile-msb .bg-next-tile-msb]
-        [bg-next-tile-id .bg-next-tile-id]
-        [bg-next-tile-attrib .bg-next-tile-attrib]
-        [vram-addr .vram-addr]
-        [tram-addr .tram-addr])
+       (  [scanline .scanline]
+          [cycle .cycle]
+          [ppuctrl .ppuctrl]
+          [ppumask .ppumask]
+          [ppustatus .ppustatus]
+          [fine-x .fine-x]
+          [ppu-data-buffer .ppu-data-buffer]
+          [frame-complete? .frame-complete?]
+          [nmi? .nmi?]
+          [address-latch? .address-latch?]
+          [bg-shifter-pattern-lo .bg-shifter-pattern-lo]
+          [bg-shifter-pattern-hi .bg-shifter-pattern-hi]
+          [bg-shifter-attrib-lo .bg-shifter-attrib-lo]
+          [bg-shifter-attrib-hi .bg-shifter-attrib-hi]
+          [bg-next-tile-lsb .bg-next-tile-lsb]
+          [bg-next-tile-msb .bg-next-tile-msb]
+          [bg-next-tile-id .bg-next-tile-id]
+          [bg-next-tile-attrib .bg-next-tile-attrib]
+          [vram-addr .vram-addr]
+          [tram-addr .tram-addr])
        (let ()
+         ; make sure everything compiles, even if we're not using it here
+         (define (do-reset) (reset))
+         (define (do-cpu-write [a : Fixnum] [b : Byte]) (cpu-write a b))
+         (define (do-cpu-read [a : Fixnum]) (cpu-read a))
          (define (do-clock) (clock))
          ; Each frame is 340 cycles * 260 scanlines.
          (println "Time for 600 frames:")

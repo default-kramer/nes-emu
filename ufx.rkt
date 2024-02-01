@@ -13,6 +13,7 @@
                        [unsafe-fxior ufxior]
                        [unsafe-fxlshift ufxlshift]
                        [unsafe-fxrshift ufxrshift]
+                       [unsafe-fxmodulo ufxmodulo]
                        ; The following procedures have no unsafe variant,
                        ; but use the "ufx" name anyway so I don't have to remember.
                        [fx=  ufx= ]

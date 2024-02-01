@@ -63,7 +63,10 @@
               #'(ufxrshift (ufxand #,mask backing) #,shift-count)]
              [(_ backing #:set! val)
               #'(SET! backing (ufxior (ufxand backing #,antimask)
-                                      (ufxlshift (ufxand val #,mask) #,shift-count)))]
+                                      (ufxand #,mask (ufxlshift val #,shift-count))))]
+             #;[(_ backing #:with val)
+                #'(ufxior (ufxand backing #,antimask)
+                          (ufxand #,mask (ufxlshift val #,shift-count)))]
              )))]))
 
 (define-syntax-rule (define-maskers [bits id] ...)

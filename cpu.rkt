@@ -1,7 +1,13 @@
 #lang typed/racket
 
+(provide PC A X Y SP P
+         cpu-read cpu-write
+         reset step nmi)
+
 (require "nestest.rkt"
          "doodling.rkt"
+         "util.rkt"
+         "ufx.rkt"
          racket/require
          (filtered-in
           (λ (name) ; Whenever I say `fx+` I actually mean `unsafe-fx+`
@@ -31,7 +37,8 @@
 ; This should be cleaned up to use a dedicated syntax parameter.
 ; Or, probably better, don't mix disassembly in with emulation logic.
 (define-syntax-rule (disasm stuff ...)
-  (display (format stuff ...)))
+  #;(display (format stuff ...))
+  (void))
 
 (define-syntax-rule (define-registers id ...)
   (begin
@@ -113,7 +120,8 @@
            (ann (handler #:address address #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
                 Fixnum))]
         ...
-        [else (error (format "Invalid opcode: $~x" op))]))
+        [else (error (format "Invalid opcode: $~x [PC:~x A:~x X:~x Y:~x SP:~x P:~x"
+                             op (ufx- PC 1) A X Y SP P))]))
 
     ; Helper for diagnostic usage:
     (: get-instruction-bytes (-> Fixnum (-> Fixnum Fixnum) (Listof Fixnum)))
@@ -158,6 +166,7 @@
   [AND #x31 IZY 2 5]
   [BIT #x24 ZP0 2 3]
   [BIT #x2C ABS 3 4]
+  [BRK #x00 IMP 1 7]
   [CLC #x18 IMP 1 2]
   [CLD #xD8 IMP 1 2]
   [CLI #x58 IMP 1 2]
@@ -353,7 +362,7 @@
     (let* ([lo : Fixnum (cpu-read PC)]
            [hi : Fixnum (cpu-read (fx+ 1 PC))]
            [result (fxior (fxlshift hi 8) lo)])
-      (PC (fx+ 2 PC))
+      (SET! PC (fx+ 2 PC))
       (values result 0)))
 
   (define-mode (IMM)
@@ -757,6 +766,20 @@
       (disasm "BIT $~a = ~a" (~h addr) (~h A))
       ignore-mode-cycle))
 
+  (def-handler (BRK addr)
+    (begin (SET! PC (ufx+ 1 PC))
+           (set-flag Flag.I)
+           (cpu-write (ufx+ #x100 SP) (ufxand #xFF (ufxrshift PC 8)))
+           (cpu-write (ufx+ #x0FF SP) (ufxand #xFF PC))
+           (set-flag Flag.B)
+           (cpu-write (ufx+ #x0FE SP) P)
+           (SET! SP (ufx- SP 3))
+           (clear-flag Flag.B)
+           (let ([hi (cpu-read #xFFFE)]
+                 [lo (cpu-read #xFFFF)])
+             (SET! PC (ufxior lo (ufxlshift hi 8))))
+           ignore-mode-cycle))
+
   (def-handler (NOP addr)
     (begin
       (disasm "NOP")
@@ -803,9 +826,12 @@
     ;   "2 (+1 if branch succeeds, +2 if to a new page)"
     ; So we ignore base-cycles and mode-cycle here.
     ; Tricky signed/unsigned math is handled by `get-branch-dest`.
-    (define-syntax-rule (ID #:address addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
+    (define-syntax-rule (ID #:address .addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
       (let* ([pc PC]
+             [addr .addr]
              [addr_abs (get-branch-dest pc addr)])
+        #;(when (ufx= pc 62016)
+            (println (list 'ID pc addr '-> addr_abs)))
         (disasm "~a $~a" 'ID (~h addr_abs 4))
         (if condition
             (let ([cycles (if (fx= (fxand #xFF00 addr_abs)
@@ -909,6 +935,33 @@
                        Fixnum)])
       cycles)))
 
+(define-syntax-rule (reset)
+  (let ([lo (cpu-read #xFFFC)]
+        [hi (cpu-read #xFFFD)])
+    (SET! PC (fxior lo (fxlshift hi 8)))
+    (SET! A 0)
+    (SET! X 0)
+    (SET! Y 0)
+    (SET! SP #xFD)
+    (SET! P (Flag.Unused #:mask))
+    8 ; cycles
+    ))
+
+(define-syntax-rule (nmi)
+  (let ([bits-to-set (ufxior* (Flag.B #:mask)
+                              (Flag.I #:mask)
+                              (Flag.Unused #:mask))])
+    (cpu-write (ufx+ #x100 SP) (ufxand #xFF (ufxrshift PC 8)))
+    (cpu-write (ufx+ #x0FF SP) (ufxand #xFF PC))
+    (SET! P (ufxior P bits-to-set))
+    (cpu-write (ufx+ #xFE SP) P)
+    (SET! SP (ufx- SP 3))
+    (let ([pc-lo (cpu-read #xFFFA)]
+          [pc-hi (cpu-read #xFFFB)])
+      (SET! PC (ufxior pc-lo (ufxlshift pc-hi 8)))
+      8 ; cycles
+      )))
+
 (define-syntax (parameterize-registers stx)
   (syntax-case stx ()
     [(parameterize ([a b] ...) body ...)
@@ -982,7 +1035,11 @@
      (check-equal? (cpu-read #xC000) #x4C)
      (check-equal? (cpu-read #x8000) #x4C)
      ; Disable log for speed
-     (define log? #t)
+     (define log? #f)
+     ; Make sure these compile
+     (define (proc-step) (step))
+     (define (proc-reset) (reset))
+     (define (proc-nmi) (nmi))
      ; Run until PC reaches last line of known good log
      (let loop ()
        (when log?
@@ -998,7 +1055,7 @@
               [sp-string (format "SP:~a" (~h .SP))]
               [cyc-string (format "CYC:~a" cycles)])
          (parameterize ([current-output-port disassembly-port])
-           (let ([cyc (step)])
+           (let ([cyc (proc-step)])
              (set! cycles (fx+ cycles cyc))))
          (define disassembly (get-output-string disassembly-port))
          (define log-item (car good-log))
