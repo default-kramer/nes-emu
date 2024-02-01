@@ -78,10 +78,35 @@
                                    ...)))))
 
 (define-syntax-rule (copy-bits #:from src #:to dst /mask ...)
-  (let* ([mask (ufxior* (/mask src #:unshifted)
+  (let* ([mask (ufxior* (/mask #:mask)
                         ...)]
          ; clear relevant bits:
          [temp (ufxand dst (ufxnot mask))]
-         ;
+         ; copy bits
          [temp (ufxior temp (ufxand src mask))])
     (SET! dst temp)))
+
+(module+ test
+  (require typed/rackunit)
+  (define-masker /bit2 #b100)
+  (define-masker /bit1 #b010)
+  (define-stxparams #:errmsg "ERR" A B)
+  (define a : Fixnum 0)
+  (define b : Fixnum 0)
+  (parameterize-syntax-ids
+   (  [A a]
+      [B b])
+   (SET! A #b1111)
+   (copy-bits #:from A #:to B /bit2 /bit1)
+   (check-equal? B #b0110)
+   (SET! A 0)
+   (copy-bits #:from A #:to B /bit2 /bit1)
+   (check-equal? B #b0000)
+   (SET! A #b1111)
+   (SET! B #b1000)
+   (copy-bits #:from A #:to B /bit1)
+   (check-equal? B #b1010)
+   (SET! A 0)
+   (copy-bits #:from A #:to B /bit1)
+   (check-equal? B #b1000)
+   ))

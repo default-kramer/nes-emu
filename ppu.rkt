@@ -266,12 +266,20 @@
           [bg-palette : Byte 0])
       (when (has-any-flag? ppumask /render-bg?)
         (let* ([bit-mux (ufxrshift #x8000 fine-x)]
-               [p0-pixel (ufxand bg-shifter-pattern-lo bit-mux)]
-               [p1-pixel (ufxand bg-shifter-pattern-hi bit-mux)]
-               [bg-pal0 (ufxand bg-shifter-attrib-lo bit-mux)]
-               [bg-pal1 (ufxand bg-shifter-attrib-hi bit-mux)])
-          (set! bg-pixel (ufxand #xFF (ufxior p0-pixel (ufxlshift p1-pixel 1))))
-          (set! bg-palette (ufxand #xFF (ufxior bg-pal0 (ufxlshift bg-pal1 1))))))
+               [p0-pixel (if (ufx= 0 (ufxand bg-shifter-pattern-lo bit-mux))
+                             0
+                             1)]
+               [p1-pixel (if (ufx= 0 (ufxand bg-shifter-pattern-hi bit-mux))
+                             0
+                             2)]
+               [bg-pal0 (if (ufx= 0 (ufxand bg-shifter-attrib-lo bit-mux))
+                            0
+                            1)]
+               [bg-pal1 (if (ufx= 0 (ufxand bg-shifter-attrib-hi bit-mux))
+                            0
+                            2)])
+          (set! bg-pixel (ufxior p0-pixel p1-pixel))
+          (set! bg-palette (ufxior bg-pal0 bg-pal1))))
       (compose-pixel! cycle scanline bg-palette bg-pixel))
 
     ; Advance renderer

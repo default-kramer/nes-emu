@@ -69,11 +69,9 @@
   ;  400-7FF => 000-3FF
   ;  800-BFF => 400-7FF
   ;  C00-FFF => 400-7FF
-  (cond
-    [(ufx< #x800 addr)
-     (ufxand #x3FF addr)]
-    [else
-     (ufxior #x400 (ufxand #x3FF addr))])
+  (let ([second-table? (ufxand #x800 addr)])
+    (ufxior (ufxand #x3FF addr)
+            (ufxrshift second-table? 1)))
   ; For reference, vertical mirror means that
   ;  000-3FF => 000-3FF
   ;  400-7FF => 400-7FF
@@ -93,24 +91,33 @@
 
 (: ppu-read (-> Fixnum Byte))
 (define (ppu-read addr)
-  (cond
-    [(ufx< addr #x2000)
-     ; Mapper 0 specific! Read from vCHRMemory (cartridge $4000 - $5FFF)
-     (unsafe-bytes-ref cart-bytes (ufx+ #x4000 (ufxand #x1FFF addr)))]
-    [(ufx< addr #x2000)
-     ; I assume this is used when the mapper doesn't intercept this range?
-     (unsafe-bytes-ref tbl-pattern (ufxand #x1FFF addr))]
-    [(ufx< addr #x3F00)
-     (unsafe-bytes-ref tbl-name (nametable-index addr))]
-    [(ufx< addr #x4000)
-     (let* ([index (palette-table-index addr)]
-            [raw (unsafe-bytes-ref tbl-palette index)]
-            ; lowest bit is grayscale flag
-            [mask (if (ufx= 0 (ufxand 1 ppumask))
-                      #x3F
-                      #x30)])
-       (ufxand raw mask))]
-    [else 0]))
+  (let ([addr (ufxand #x3FFF addr)])
+    (cond
+      [(ufx< addr #x2000)
+       (let ([result
+              ; Mapper 0 specific! Read from vCHRMemory (cartridge $4000 - $5FFF)
+              (unsafe-bytes-ref cart-bytes (ufx+ #x4000 (ufxand #x1FFF addr)))])
+         #;(when (ufx= 439187 system-clock)
+             (println (list "ppu-read" addr result ppuctrl bg-next-tile-id vram-addr)))
+         result)]
+      [(ufx< addr #x2000)
+       ; I assume this is used when the mapper doesn't intercept this range?
+       (unsafe-bytes-ref tbl-pattern (ufxand #x1FFF addr))]
+      [(ufx< addr #x3F00)
+       (let* ([index (nametable-index addr)]
+              [result (unsafe-bytes-ref tbl-name index)])
+         #;(when (ufx= 439119 system-clock)
+             (println (list "ppu-read" addr result index)))
+         result)]
+      [(ufx< addr #x4000)
+       (let* ([index (palette-table-index addr)]
+              [raw (unsafe-bytes-ref tbl-palette index)]
+              ; lowest bit is grayscale flag
+              [mask (if (ufx= 0 (ufxand 1 ppumask))
+                        #x3F
+                        #x30)])
+         (ufxand raw mask))]
+      [else 0])))
 
 ; see olc2C02::ppuWrite
 (: ppu-write (-> Fixnum Fixnum Void))
@@ -121,7 +128,11 @@
       [(ufx< addr #x2000)
        (unsafe-bytes-set! tbl-pattern (ufxand #x1FFF addr) value)]
       [(ufx< addr #x3F00)
-       (unsafe-bytes-set! tbl-name (nametable-index addr) value)]
+       (let* ([addr (ufxand #xFFF addr)]
+              [index (nametable-index addr)])
+         #;(display* #:port ppulog
+                     " tbl-name update "addr" "value"\n")
+         (unsafe-bytes-set! tbl-name index value))]
       [(ufx< addr #x4000)
        (let ([index (palette-table-index addr)])
          (unsafe-bytes-set! tbl-palette index value))])))
@@ -132,12 +143,15 @@
 (define current-pixel : RGB #(0 0 0))
 (define current-pixel-x : Fixnum 0)
 (define current-pixel-y : Fixnum 0)
+(define log-pixel-addr : Fixnum 0)
+(define log-pixel-index : Fixnum 0)
 
-(define (current-pixel-number)
+(: pixel->number (-> RGB Fixnum))
+(define (pixel->number current-pixel)
   (ufxior* #xFF000000 ; alpha
-           (ufxlshift (unsafe-vector-ref current-pixel 0) 16) ; r
+           (ufxlshift (unsafe-vector-ref current-pixel 0) 0) ; r
            (ufxlshift (unsafe-vector-ref current-pixel 1) 8)  ; g
-           (ufxlshift (unsafe-vector-ref current-pixel 2) 0)  ; b
+           (ufxlshift (unsafe-vector-ref current-pixel 2) 16)  ; b
            ))
 
 (define-syntax-rule (make-pal-screen [idx r g b] ...)
@@ -220,9 +234,32 @@
          [addr (ufxior* #x3F00
                         (ufxlshift bg-palette 2)
                         bg-pixel)]
-         [index (ppu-read addr)]
-         [index (ufxand #x3F index)])
-    (set! current-pixel (unsafe-vector-ref pal-screen index))
+         [index (ppu-read addr)])
+    #;(when (or (ufx= system-clock 357192)
+                (ufx= system-clock 357191)
+                (ufx= system-clock 357190))
+        (let* ([bit-mux (ufxrshift #x8000 fine-x)]
+               [p0-pixel (ufxand bg-shifter-pattern-lo bit-mux)]
+               [p1-pixel (ufxand bg-shifter-pattern-hi bit-mux)]
+               [bg-pal0 (ufxand bg-shifter-attrib-lo bit-mux)]
+               [bg-pal1 (ufxand bg-shifter-attrib-hi bit-mux)]
+               [bg-pixel (ufxand #xFF (ufxior p0-pixel (ufxlshift p1-pixel 1)))]
+               [bg-palette (ufxand #xFF (ufxior bg-pal0 (ufxlshift bg-pal1 1)))])
+          (println (list 'ppumask ppumask
+                         'cycle cycle
+                         'scanline scanline
+                         'bg-shifter-pattern-lo bg-shifter-pattern-lo
+                         'bg-shifter-pattern-hi bg-shifter-pattern-hi
+                         'bit-mux bit-mux
+                         'p0-pixel p0-pixel
+                         'p1-pixel p1-pixel
+                         'bg-pal0 bg-pal0
+                         'bg-pal1 bg-pal1
+                         'bg-pixel bg-pixel
+                         'bg-palette bg-palette))))
+    (set! log-pixel-addr addr)
+    (set! log-pixel-index index)
+    (set! current-pixel (unsafe-vector-ref pal-screen (ufxand #x3F index)))
     (set! current-pixel-x x)
     (set! current-pixel-y y)))
 
@@ -294,9 +331,9 @@
          result)]
       [(ufx< addr #x4000)
        (let ([result (ppu-register-read addr)])
-         (when (ufx= 2 (ufxand 7 addr))
-           (display* #:port ppulog
-                     "read ppureg 2 produces "result"\n"))
+         #;(when (ufx= 2 (ufxand 7 addr))
+             (display* #:port ppulog
+                       "read ppureg 2 produces "result"\n"))
          result)]
       ; TODO also need controller stuff at $4016
       [(and (ufx>= addr #x8000)
@@ -383,9 +420,10 @@
   (ppu-clock)
   ; Log PPU stuff before stepping the CPU to match my hacked up OLC logging
   (display* #:port ppulog
-            system-clock" "current-pixel-x"."current-pixel-y
-            " "(current-pixel-number)" "vram-addr
-            " "ppustatus" "ppu-data-buffer"\n")
+            system-clock" "current-pixel-x","current-pixel-y
+            "="log-pixel-index" "log-pixel-addr" "vram-addr
+            " "ppustatus" "ppu-data-buffer" "bg-shifter-pattern-lo" "fine-x
+            " "bg-next-tile-msb" "bg-next-tile-lsb" "bg-next-tile-id"\n")
 
   (when (ufx= 0 (ufxmodulo system-clock 3))
     (when (ufx= 0 cpu-cycles)
