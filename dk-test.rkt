@@ -103,26 +103,28 @@
     [(ufx< addr #x3F00)
      (unsafe-bytes-ref tbl-name (nametable-index addr))]
     [(ufx< addr #x4000)
-     (let ([index (palette-table-index addr)]
-           ; lowest bit is grayscale flag
-           [mask (if (ufx= 0 (ufxand 1 ppumask))
-                     #x3F
-                     #x30)])
-       (ufxand mask (unsafe-bytes-ref tbl-palette index)))]
+     (let* ([index (palette-table-index addr)]
+            [raw (unsafe-bytes-ref tbl-palette index)]
+            ; lowest bit is grayscale flag
+            [mask (if (ufx= 0 (ufxand 1 ppumask))
+                      #x3F
+                      #x30)])
+       (ufxand raw mask))]
     [else 0]))
 
 ; see olc2C02::ppuWrite
 (: ppu-write (-> Fixnum Fixnum Void))
 (define (ppu-write addr value)
   ; Donkey Kong does not respond to PPU writes
-  (cond
-    [(ufx< addr #x2000)
-     (unsafe-bytes-set! tbl-pattern (ufxand #x1FFF addr) value)]
-    [(ufx< addr #x3F00)
-     (unsafe-bytes-set! tbl-name (nametable-index addr) value)]
-    [(ufx< addr #x4000)
-     (let ([index (palette-table-index addr)])
-       (unsafe-bytes-set! tbl-palette index value))]))
+  (let ([addr (ufxand #x3FFF addr)])
+    (cond
+      [(ufx< addr #x2000)
+       (unsafe-bytes-set! tbl-pattern (ufxand #x1FFF addr) value)]
+      [(ufx< addr #x3F00)
+       (unsafe-bytes-set! tbl-name (nametable-index addr) value)]
+      [(ufx< addr #x4000)
+       (let ([index (palette-table-index addr)])
+         (unsafe-bytes-set! tbl-palette index value))])))
 
 
 (define-type RGB (Immutable-Vector Byte Byte Byte))
@@ -215,9 +217,10 @@
 (define (compose-pixel! cycle scanline bg-palette bg-pixel)
   (let* ([x (ufx- cycle 1)]
          [y scanline]
-         [index (ufxior* #x3F00
-                         (ufxlshift bg-palette 2)
-                         bg-pixel)]
+         [addr (ufxior* #x3F00
+                        (ufxlshift bg-palette 2)
+                        bg-pixel)]
+         [index (ppu-read addr)]
          [index (ufxand #x3F index)])
     (set! current-pixel (unsafe-vector-ref pal-screen index))
     (set! current-pixel-x x)
@@ -394,7 +397,7 @@
   (set! system-clock (ufx+ 1 system-clock)))
 
 
-(module+ main
+(module+ test
   (bus-reset)
   (with-handlers ([exn? (lambda (e)
                           (println (list "FATAL ERROR" e)))])
