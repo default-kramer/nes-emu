@@ -1,5 +1,11 @@
 #lang typed/racket
 
+(provide bus-clock TODO bus-reset
+         current-pixel
+         RGB
+         current-pixel-x
+         current-pixel-y)
+
 (require (prefix-in cpu: "cpu.rkt")
          (prefix-in ppu: "ppu.rkt")
          "ufx.rkt"
@@ -314,7 +320,7 @@
 (define cpu-ram (make-bytes #x800)) ; 2048 bytes
 
 (define last-opcode-read : Fixnum -1) ; TEMP help log opcodes
-(define cpulog (open-output-file "my-cpulog.txt" #:exists 'replace))
+;(define cpulog (open-output-file "my-cpulog.txt" #:exists 'replace))
 (define-syntax-rule (display* #:port port item ...)
   (begin (display item port)
          ...))
@@ -342,12 +348,12 @@
        ; Read from vPRGMemory (cartridge $0000 - $3FFF)
        (unsafe-bytes-ref cart-bytes (ufxand #x3FFF addr))]
       [else 0]))
-  (when (and (ufx= cpu-cycles 0)
-             (ufx= addr PC)
-             (not (ufx= system-clock last-opcode-read)))
-    (set! last-opcode-read system-clock)
-    (display* #:port cpulog
-              system-clock" "PC" "result" "A" "X" "Y" "SP"\n"))
+  #;(when (and (ufx= cpu-cycles 0)
+               (ufx= addr PC)
+               (not (ufx= system-clock last-opcode-read)))
+      (set! last-opcode-read system-clock)
+      #;(display* #:port cpulog
+                  system-clock" "PC" "result" "A" "X" "Y" "SP"\n"))
   result)
 
 ; see Bus::cpuWrite
@@ -368,11 +374,6 @@
     [else
      (void)]))
 
-(define (set-PC [val : Fixnum])
-  #;(display* #:port cpulog
-              "  PC jumping from "PC" to "val"\n")
-  (set! PC val))
-
 (: cpu-reset (-> Fixnum))
 (: cpu-step (-> Fixnum))
 (: cpu-nmi (-> Fixnum))
@@ -383,19 +384,14 @@
                          [(_ arg ...) #'(cpu-read arg ...)]))]
        [cpu:cpu-write (lambda (stx)
                         (syntax-case stx ()
-                          [(_ arg ...) #'(cpu-write arg ...)]))]
-       [cpu:PC (lambda (stx)
-                 (syntax-case stx ()
-                   [(_ val) #'(set-PC val)]
-                   [else #'PC]))]
-       )
+                          [(_ arg ...) #'(cpu-write arg ...)]))])
     (parameterize-syntax-ids
-     (  ;[cpu:PC PC]
-      [cpu:A A]
-      [cpu:X X]
-      [cpu:Y Y]
-      [cpu:SP SP]
-      [cpu:P P])
+     (  [cpu:PC PC]
+        [cpu:A A]
+        [cpu:X X]
+        [cpu:Y Y]
+        [cpu:SP SP]
+        [cpu:P P])
      (define (cpu-reset) (cpu:reset))
      (define (cpu-step) (cpu:step))
      (define (cpu-nmi) (cpu:nmi))
@@ -409,30 +405,56 @@
 
 ;;; So I think the PPU and CPU are complete!?!
 ;;; And now we just have to do the bus stuff...
+
+(define-syntax-rule (adjust-cycles expr)
+  ; Let's immediately adjust the CPU cycles to match the system clock
+  (ufx* 3 expr))
+
 (define (bus-reset)
-  (set! cpu-cycles (cpu-reset))
+  (set! cpu-cycles (adjust-cycles (cpu-reset)))
   (ppu-reset)
   (set! system-clock 0))
 
-(define ppulog (open-output-file "my-ppulog.txt" #:exists 'replace))
+;(define ppulog (open-output-file "my-ppulog.txt" #:exists 'replace))
+
+(define (blah)
+  (adjust-cycles (cpu-step)))
+
+(define (todo-cpu)
+  (when (ufx= 0 cpu-cycles)
+    (set! cpu-cycles (blah)))
+  (set! cpu-cycles (ufx- cpu-cycles 1)))
+
+(define (todo-nmi)
+  (when nmi?
+    (set! nmi? #f)
+    (set! cpu-cycles (adjust-cycles (cpu-nmi)))))
 
 (define (bus-clock)
   (ppu-clock)
   ; Log PPU stuff before stepping the CPU to match my hacked up OLC logging
-  (display* #:port ppulog
-            system-clock" "current-pixel-x","current-pixel-y
-            "="log-pixel-index" "log-pixel-addr" "vram-addr
-            " "ppustatus" "ppu-data-buffer" "bg-shifter-pattern-lo" "fine-x
-            " "bg-next-tile-msb" "bg-next-tile-lsb" "bg-next-tile-id"\n")
+  #;(display* #:port ppulog
+              system-clock" "current-pixel-x","current-pixel-y
+              "="log-pixel-index" "log-pixel-addr" "vram-addr
+              " "ppustatus" "ppu-data-buffer" "bg-shifter-pattern-lo" "fine-x
+              " "bg-next-tile-msb" "bg-next-tile-lsb" "bg-next-tile-id"\n")
 
-  (when (ufx= 0 (ufxmodulo system-clock 3))
-    (when (ufx= 0 cpu-cycles)
-      (set! cpu-cycles (cpu-step)))
-    (set! cpu-cycles (ufx- cpu-cycles 1)))
-  (when nmi?
-    (set! nmi? #f)
-    (set! cpu-cycles (cpu-nmi)))
+  ;(when (ufx= 0 (ufxmodulo system-clock 3))
+  ;(when (ufx= 0 cpu-cycles)
+  ; (set! cpu-cycles (adjust-cycles (cpu-step))))
+  ;(set! cpu-cycles (ufx- cpu-cycles 1))
+  (todo-cpu)
+  ;(when nmi?
+  ; (set! nmi? #f)
+  ;(set! cpu-cycles (adjust-cycles (cpu-nmi))))
+  (todo-nmi)
   (set! system-clock (ufx+ 1 system-clock)))
+
+(: TODO (-> Boolean))
+(define (TODO)
+  (and frame-complete?
+       (begin (set! frame-complete? #f)
+              #t)))
 
 
 (module+ test
@@ -441,5 +463,5 @@
                           (println (list "FATAL ERROR" e)))])
     (for ([i (in-range 714387 #;982411)])
       (bus-clock)))
-  (close-output-port cpulog)
-  (close-output-port ppulog))
+  #;(close-output-port cpulog)
+  #;(close-output-port ppulog))

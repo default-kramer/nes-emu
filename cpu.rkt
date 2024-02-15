@@ -11,9 +11,9 @@
          racket/require
          (filtered-in
           (λ (name) ; Whenever I say `fx+` I actually mean `unsafe-fx+`
-            (and (regexp-match #rx"^unsafe-fx" name)
-                 (regexp-replace #rx"unsafe-" name "")))
-          racket/unsafe/ops)
+            (and (regexp-match #rx"^ufx" name)
+                 (regexp-replace #rx"ufx" name "fx")))
+          "ufx.rkt")
          racket/stxparam)
 
 (module+ test

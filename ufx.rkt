@@ -5,8 +5,20 @@
 
 ; Rename and provide "unsafe-fx" procedures with a "ufx" naming convention.
 (module builtin typed/racket
+  (require racket/fixnum
+           racket/unsafe/ops)
+
+  (require typed/racket/unsafe)
+  #;(unsafe-require/typed
+     racket/unsafe/ops
+     [(unsafe-fx+/wraparound ufx+) (-> Fixnum Fixnum Fixnum)]
+     [(unsafe-fx-/wraparound ufx-) (-> Fixnum Fixnum Fixnum)]
+     [(unsafe-fx*/wraparound ufx*) (-> Fixnum Fixnum Fixnum)])
+  #;(provide ufx+ ufx- ufx*)
+
   (provide (rename-out [unsafe-fx+ ufx+]
                        [unsafe-fx- ufx-]
+                       [unsafe-fx* ufx*]
                        [unsafe-fxnot ufxnot]
                        [unsafe-fxand ufxand]
                        [unsafe-fxxor ufxxor]
@@ -22,8 +34,7 @@
                        [fx<= ufx<=]
                        [fx<  ufx< ]
                        ))
-  (require racket/fixnum
-           racket/unsafe/ops))
+  )
 
 (require (submod 'builtin))
 
