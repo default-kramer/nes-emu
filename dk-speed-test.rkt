@@ -2,13 +2,13 @@
 
 (require profile)
 
-(module TYPED typed/racket
+(module TYPED racket
   (provide do-some-frames)
   (require "dk-test.rkt")
 
   (bus-reset)
 
-  (: do-one-frame (-> Void))
+  ;(: do-one-frame (-> Void))
   (define (do-one-frame)
     (let loop ()
       (bus-clock)

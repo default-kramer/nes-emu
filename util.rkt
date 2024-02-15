@@ -1,4 +1,4 @@
-#lang typed/racket
+#lang racket
 
 (provide define-stxparams
          SET!
@@ -91,8 +91,8 @@
   (define-masker /bit2 #b100)
   (define-masker /bit1 #b010)
   (define-stxparams #:errmsg "ERR" A B)
-  (define a : Fixnum 0)
-  (define b : Fixnum 0)
+  (define a 0);: Fixnum 0)
+  (define b 0);: Fixnum 0)
   (parameterize-syntax-ids
    (  [A a]
       [B b])

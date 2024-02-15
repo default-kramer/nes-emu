@@ -1,8 +1,10 @@
-#lang typed/racket
+#lang racket
+(define-syntax-rule (: stuff ...)
+  (begin))
 
 (provide bus-clock TODO bus-reset
          current-pixel
-         RGB
+         ;RGB
          current-pixel-x
          current-pixel-y)
 
@@ -23,8 +25,8 @@
         (error ".nes file did not contain enough bytes")
         bytes)))
 
-(define-syntax-rule (define-multi [a ...] ...)
-  (begin (define a ...)
+(define-syntax-rule (define-multi [a : type val] ...)
+  (begin (define a val)
          ...))
 
 (define-multi
@@ -144,13 +146,13 @@
          (unsafe-bytes-set! tbl-palette index value))])))
 
 
-(define-type RGB (Immutable-Vector Byte Byte Byte))
+;(define-type RGB (Immutable-Vector Byte Byte Byte))
 
-(define current-pixel : RGB #(0 0 0))
-(define current-pixel-x : Fixnum 0)
-(define current-pixel-y : Fixnum 0)
-(define log-pixel-addr : Fixnum 0)
-(define log-pixel-index : Fixnum 0)
+(define current-pixel  #(0 0 0))
+(define current-pixel-x 0)
+(define current-pixel-y 0)
+(define log-pixel-addr  0)
+(define log-pixel-index 0)
 
 (: pixel->number (-> RGB Fixnum))
 (define (pixel->number current-pixel)
@@ -308,9 +310,9 @@
         [ppu:tram-addr tram-addr])
      (define (ppu-reset) (ppu:reset))
      (define (ppu-clock) (ppu:clock))
-     (define (ppu-reg-write [addr : Fixnum] [value : Fixnum])
+     (define (ppu-reg-write addr value); [addr : Fixnum] [value : Fixnum])
        (ppu:cpu-write addr value))
-     (define (ppu-reg-read [addr : Fixnum])
+     (define (ppu-reg-read addr); [addr : Fixnum])
        (ppu:cpu-read addr))
      (values ppu-reset ppu-clock ppu-reg-write ppu-reg-read))))
 
@@ -319,7 +321,7 @@
 
 (define cpu-ram (make-bytes #x800)) ; 2048 bytes
 
-(define last-opcode-read : Fixnum -1) ; TEMP help log opcodes
+(define last-opcode-read  -1) ; TEMP help log opcodes
 ;(define cpulog (open-output-file "my-cpulog.txt" #:exists 'replace))
 (define-syntax-rule (display* #:port port item ...)
   (begin (display item port)

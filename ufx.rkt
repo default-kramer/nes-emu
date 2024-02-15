@@ -1,10 +1,13 @@
-#lang typed/racket
+#lang racket
 
 (provide (all-from-out (submod 'builtin))
+         ann
          ufxior*)
 
+(define-syntax-rule (ann x type) x)
+
 ; Rename and provide "unsafe-fx" procedures with a "ufx" naming convention.
-(module builtin typed/racket
+(module builtin racket
   (require racket/fixnum
            racket/unsafe/ops)
 

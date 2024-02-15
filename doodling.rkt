@@ -1,4 +1,4 @@
-#lang typed/racket
+#lang racket
 
 (provide get-branch-dest)
 
@@ -9,14 +9,14 @@
                  (regexp-replace #rx"unsafe-" name "")))
           racket/unsafe/ops))
 
-(define max-fixnum : Fixnum
-  (let loop ([doubler : Integer 256])
+(define max-fixnum ; : Fixnum
+  (let loop ([doubler 256]); : Integer 256])
     (let ([temp (* 2 doubler)])
       (if (fixnum? temp)
           (loop temp)
-          (cast (- temp 1) Fixnum)))))
+          (- temp 1)))))
 
-(define (~h [val : Fixnum] [width : (U False Exact-Nonnegative-Integer) #f])
+(define (~h val [width #f]); [val : Fixnum] [width : (U False Exact-Nonnegative-Integer) #f])
   (~a (string-upcase (format "~x" val))
       #:width width #:align 'right #:left-pad-string "0"))
 
@@ -37,7 +37,7 @@
     (fxand #xFFFF (fx+ src offset))))
 
 (module+ test
-  (require typed/rackunit)
+  (require rackunit)
 
   ; Simple example with positive branch
   ; log item: C9F8  F0 07     BEQ $CA01                       A:80 X:00 Y:00 P:A5 SP:FB PPU:  6,174 CYC:740

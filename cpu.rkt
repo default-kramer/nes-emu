@@ -1,4 +1,6 @@
-#lang typed/racket
+#lang racket
+(define-syntax-rule (: stuff ...)
+  (begin))
 
 (provide PC A X Y SP P
          cpu-read cpu-write
@@ -26,8 +28,7 @@
 ;    agrees that it needs to be applied.
 (define-syntax-rule (define-mode (id) body ...)
   (define-syntax-rule (id)
-    (ann (begin body ...)
-         (Values Fixnum (U Zero One)))))
+    (begin body ...)))
 
 
 (define ignore-mode-cycle 0)
@@ -61,10 +62,10 @@
     (define-syntax (id stx)
       (syntax-case stx ()
         [(_ #:mask)
-         #'(ann bit Fixnum)]
+         #'bit]
         ; Flags are always used in an 8-bit context, so leave all higher bits off
         [(_ #:antimask)
-         #`(ann #,(bitwise-xor #xFF (syntax-e #'bit)) Fixnum)]))
+         #`#,(bitwise-xor #xFF (syntax-e #'bit))]))
     ...))
 
 (module+ test
@@ -97,7 +98,7 @@
 (define-registers cpu-read cpu-write)
 
 ; Convert number to hexadecimal string to match known good log
-(define (~h [val : Fixnum] [width : Exact-Nonnegative-Integer 2])
+(define (~h val [width 2]) ; [val : Fixnum] [width : Exact-Nonnegative-Integer 2])
   (~a (string-upcase (format "~x" val))
       #:width width #:align 'right #:left-pad-string "0"))
 
@@ -113,7 +114,8 @@
          ; The addressing mode `(mode)` is expected to return 2 values:
          ; The `address` could be absolute or relative depending on the context.
          ; The `mode-cycle` will be 1 when "(+1 if page crossed)", else zero.
-         (let-values ([([address : Fixnum] [mode-cycle : (U Zero One)])
+         (let-values ([#;([address : Fixnum] [mode-cycle : (U Zero One)])
+                       (address mode-cycle)
                        (mode)])
            ; Now we invoke the instruction handler, which is expected to do the work
            ; and return the total number of cycles
@@ -125,7 +127,7 @@
 
     ; Helper for diagnostic usage:
     (: get-instruction-bytes (-> Fixnum (-> Fixnum Fixnum) (Listof Fixnum)))
-    (define (get-instruction-bytes [pc : Fixnum] [cpu-read : (-> Fixnum Fixnum)])
+    (define (get-instruction-bytes pc cpu-read) ; [pc : Fixnum] [cpu-read : (-> Fixnum Fixnum)])
       (let ([op (cpu-read pc)])
         (case op
           [(opcode unofficial-opcodes ...)
@@ -359,8 +361,8 @@
 {begin ; Addressing Modes
 
   (define-mode (ABS)
-    (let* ([lo : Fixnum (cpu-read PC)]
-           [hi : Fixnum (cpu-read (fx+ 1 PC))]
+    (let* ([lo  (cpu-read PC)]
+           [hi  (cpu-read (fx+ 1 PC))]
            [result (fxior (fxlshift hi 8) lo)])
       (SET! PC (fx+ 2 PC))
       (values result 0)))
@@ -931,8 +933,7 @@
 (define-syntax-rule (step)
   (let ([opcode (cpu-read PC)])
     (PC (fx+ 1 PC))
-    (let ([cycles (ann (emulate-one-instruction opcode)
-                       Fixnum)])
+    (let ([cycles (emulate-one-instruction opcode)])
       cycles)))
 
 (define-syntax-rule (reset)
@@ -980,14 +981,14 @@
            body ...))]))
 
 (module+ test
-  (define .PC : Fixnum #xC000)
-  (define .A : Fixnum 0)
-  (define .X : Fixnum 0)
-  (define .Y : Fixnum 0)
-  (define .SP : Fixnum #xFD)
-  (define .ST : Fixnum #x24)
+  (define .PC #xC000)
+  (define .A  0)
+  (define .X  0)
+  (define .Y  0)
+  (define .SP  #xFD)
+  (define .ST  #x24)
   (define good-log (parse-reference-log))
-  (define cycles : Fixnum 7)
+  (define cycles 7)
 
   (define-syntax-rule (display* x ...)
     (begin (display x) ...))

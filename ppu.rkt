@@ -1,4 +1,6 @@
-#lang typed/racket
+#lang racket
+(define-syntax-rule (: stuff ...)
+  (begin))
 
 (provide
  ; Functionality, as macros:
@@ -112,7 +114,7 @@
 
 (define-syntax-rule (increment-scroll-y)
   (when (render-bg-or-sprites?)
-    (let ([old-fine-y : Fixnum (/fine-y vram-addr #:shifted)])
+    (let ([old-fine-y (/fine-y vram-addr #:shifted)])
       (if (ufx< old-fine-y 7)
           (/fine-y vram-addr #:set! (ufx+ 1 old-fine-y))
           ; else
@@ -262,8 +264,8 @@
         (SET! nmi? #t)))
     
     ; Compose the pixel!
-    (let ([bg-pixel : Byte 0]
-          [bg-palette : Byte 0])
+    (let ([bg-pixel 0]
+          [bg-palette 0])
       (when (has-any-flag? ppumask /render-bg?)
         (let* ([bit-mux (ufxrshift #x8000 fine-x)]
                [p0-pixel (if (ufx= 0 (ufxand bg-shifter-pattern-lo bit-mux))
@@ -366,14 +368,14 @@
 (define-syntax-rule (cpu-read addr)
   (case (ufxand 7 addr)
     [(2)
-     (let ([result : Byte (ufxior (ufxand #xE0 ppustatus)
-                                  (ufxand #x1F ppu-data-buffer))])
+     (let ([result (ufxior (ufxand #xE0 ppustatus)
+                           (ufxand #x1F ppu-data-buffer))])
        (/vblank? ppustatus #:set! 0)
        (SET! address-latch? #f)
        result)]
     [(7)
      ; OLC: Reads from the NameTable ram get delayed one cycle
-     (let ([result : Byte ppu-data-buffer])
+     (let ([result ppu-data-buffer])
        (SET! ppu-data-buffer (ppu-read vram-addr))
        ; OLC: However, if the address was in the palette range, the data is not delayed, so it returns immediately
        (when (ufx>= vram-addr #x3F00)
@@ -384,10 +386,10 @@
      0]))
 
 (module+ test
-  (require typed/rackunit
+  (require rackunit
            racket/stxparam)
-  (define randomizer : Fixnum (random 9999))
-  (define (.ppu-write [addr : Fixnum] [value : Byte])
+  (define randomizer (random 9999)); : Fixnum (random 9999))
+  (define (.ppu-write addr value) ; [addr : Fixnum] [value : Byte])
     (void))
   (: .ppu-read (-> Fixnum Byte))
   (define (.ppu-read addr)
@@ -403,26 +405,26 @@
                         [compose-pixel! (lambda (stx)
                                           (syntax-case stx ()
                                             [_ #'(void)]))])
-    (let ([.scanline : Fixnum 0]
-          [.cycle : Fixnum 0] ; int16
-          [.ppuctrl : Fixnum 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
-          [.ppumask : Fixnum 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
-          [.ppustatus : Fixnum 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
-          [.fine-x : Byte 0]
-          [.ppu-data-buffer : Byte 0] ; uint8
-          [.frame-complete? : Boolean #f]
-          [.nmi? : Boolean #f]
-          [.address-latch? : Boolean #f]
-          [.bg-shifter-pattern-lo : Fixnum 0] ; uint16
-          [.bg-shifter-pattern-hi : Fixnum 0] ; uint16
-          [.bg-shifter-attrib-lo : Fixnum 0] ; uint16
-          [.bg-shifter-attrib-hi : Fixnum 0] ; uint16
-          [.bg-next-tile-lsb : Byte 0]
-          [.bg-next-tile-msb : Byte 0]
-          [.bg-next-tile-id : Byte 0]
-          [.bg-next-tile-attrib : Fixnum 0] ; seems to be clamped down to just the 2 lowest bits??
-          [.vram-addr : Fixnum 0]
-          [.tram-addr : Fixnum 0]
+    (let ([.scanline  0]
+          [.cycle  0] ; int16
+          [.ppuctrl 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
+          [.ppumask 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
+          [.ppustatus 0] ; uint8, we'll just ignore the excess bytes (hopefully!)
+          [.fine-x 0]
+          [.ppu-data-buffer 0] ; uint8
+          [.frame-complete? #f]
+          [.nmi? #f]
+          [.address-latch? #f]
+          [.bg-shifter-pattern-lo 0] ; uint16
+          [.bg-shifter-pattern-hi 0] ; uint16
+          [.bg-shifter-attrib-lo  0] ; uint16
+          [.bg-shifter-attrib-hi  0] ; uint16
+          [.bg-next-tile-lsb 0]
+          [.bg-next-tile-msb 0]
+          [.bg-next-tile-id  0]
+          [.bg-next-tile-attrib 0] ; seems to be clamped down to just the 2 lowest bits??
+          [.vram-addr  0]
+          [.tram-addr  0]
           )
       (parameterize-syntax-ids
        (  [scanline .scanline]
@@ -448,8 +450,8 @@
        (let ()
          ; make sure everything compiles, even if we're not using it here
          (define (do-reset) (reset))
-         (define (do-cpu-write [a : Fixnum] [b : Byte]) (cpu-write a b))
-         (define (do-cpu-read [a : Fixnum]) (cpu-read a))
+         (define (do-cpu-write a b) (cpu-write a b))
+         (define (do-cpu-read a) (cpu-read a))
          (define (do-clock) (clock))
          ; Each frame is 340 cycles * 260 scanlines.
          (println "Time for 600 frames:")
