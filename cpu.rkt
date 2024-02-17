@@ -8,6 +8,7 @@
          "doodling.rkt"
          "util.rkt"
          "ufx.rkt"
+         (submod "cpu-instructions.rkt" as-macros)
          racket/require
          (filtered-in
           (λ (name) ; Whenever I say `fx+` I actually mean `unsafe-fx+`
@@ -21,24 +22,14 @@
 
 ; The result of an addressing mode must be two values:
 ; 1. An address (could be absolute or relative)
-; 2. Additional clock cycles (0 or 1) needed by this addressing mode.
-;    Even when this value is 1 it will only be applied if the instruction
-;    agrees that it needs to be applied.
+; 2. The ExtraCyclesMask
 (define-syntax-rule (define-mode (id) body ...)
   (define-syntax-rule (id)
     (ann (begin body ...)
-         (Values Fixnum (U Zero One)))))
-
+         (Values Fixnum Fixnum))))
 
 (define ignore-mode-cycle 0)
 (define respect-mode-cycle 1)
-
-; TODO - This currently captures disassembly to (current-output-port)
-; This should be cleaned up to use a dedicated syntax parameter.
-; Or, probably better, don't mix disassembly in with emulation logic.
-(define-syntax-rule (disasm stuff ...)
-  #;(display (format stuff ...))
-  (void))
 
 (define-syntax-rule (define-registers id ...)
   (begin
@@ -46,15 +37,6 @@
       (lambda (stx)
         (raise-syntax-error 'id "CPU register not parameterized")))
     ...))
-
-; Maybe we can transparently handle overflow in the setters?
-; I think, for example, that (set! PC x) really means
-; (set! PC (fxand x #xFFFF))
-; PC - Program Counter
-; A,X,Y - general purpose registers
-; SP - stack pointer
-; P - status flags (apparently "P" is for "Processor status")
-(define-registers PC A X Y SP P)
 
 (define-syntax-rule (define-flags [id bit] ...)
   (begin
@@ -80,21 +62,7 @@
   [Flag.V 64]
   [Flag.N 128])
 
-(define-syntax-rule (set-flag flag)
-  (P (fxior P (flag #:mask))))
 
-(define-syntax-rule (clear-flag flag)
-  (P (fxand P (flag #:antimask))))
-
-(define-syntax-rule (put-flag id test)
-  (if test
-      (set-flag id)
-      (clear-flag id)))
-
-(define-syntax-rule (get-flag flag)
-  (not (fx= 0 (fxand P (flag #:mask)))))
-
-(define-registers cpu-read cpu-write)
 
 ; Convert number to hexadecimal string to match known good log
 (define (~h [val : Fixnum] [width : Exact-Nonnegative-Integer 2])
@@ -110,14 +78,11 @@
       ; The opcode is passed in
       (case op
         [(opcode unofficial-opcodes ...)
-         ; The addressing mode `(mode)` is expected to return 2 values:
-         ; The `address` could be absolute or relative depending on the context.
-         ; The `mode-cycle` will be 1 when "(+1 if page crossed)", else zero.
-         (let-values ([([address : Fixnum] [mode-cycle : (U Zero One)])
+         (let-values ([([address : Fixnum] [extra-cycles-mask : Fixnum])
                        (mode)])
            ; Now we invoke the instruction handler, which is expected to do the work
            ; and return the total number of cycles
-           (ann (handler #:address address #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
+           (ann (handler #:address address #:base-cycles base-cycles #:extra-cycles-mask extra-cycles-mask #:opcode opcode)
                 Fixnum))]
         ...
         [else (error (format "Invalid opcode: $~x [PC:~x A:~x X:~x Y:~x SP:~x P:~x"
@@ -381,9 +346,11 @@
     (values 0 0))
 
   (define-mode (REL)
-    (let ([addr (cpu-read PC)])
+    (let ([addr (cpu-read PC)]
+          ; The branch instructions can return +1 or +2 extra-cycles
+          [extra-cycles-mask #xFF])
       (PC (fx+ 1 PC))
-      (values addr 0)))
+      (values addr extra-cycles-mask)))
 
   (define-mode (IZX)
     (let* ([pc PC]
@@ -453,479 +420,6 @@
   (define-ZP* [ZPX X] [ZPY Y])
 
   ; end Addressing Modes
-  }
-
-{begin ; Instructions
-
-  (define-syntax-rule (setZN byte) ; helper to set Z and N flags
-    (begin (put-flag Flag.Z (fx= 0 byte))
-           (put-flag Flag.N (fx= #x80 (fxand #x80 byte)))))
-
-  ; Defines a handler that must return zero or one to indicate whether the mode-cycle should be respected or not.
-  (define-syntax-rule (def-handler (id addr) body ...)
-    (define-syntax-rule (id #:address addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
-      (let ([apply-mode-cycle? (ann (let () body ...)
-                                    (U Zero One))])
-        ; Return adjusted cycle count.
-        ; The mode-cycle is only respected if this handler also returned 1.
-        (fx+ base-cycles (fxand mode-cycle apply-mode-cycle?)))))
-
-  (def-handler (JMP addr)
-    (begin
-      (PC addr)
-      (disasm "JMP $~a" (~h addr 4))
-      ignore-mode-cycle))
-
-  (def-handler (JSR addr)
-    (let ([pc (fx- PC 1)])
-      (cpu-write (fx+ #x0100 SP)
-                 (fxand #xFF (fxrshift pc 8)))
-      (SP (fx- SP 1))
-      (cpu-write (fx+ #x0100 SP)
-                 (fxand #xFF pc))
-      (SP (fx- SP 1))
-      (PC addr)
-      (disasm "JSR $~a" (~h addr 4))
-      ignore-mode-cycle))
-
-  (def-handler (RTS addr)
-    (let* ([sp SP]
-           [a (cpu-read (fx+ #x101 sp))]
-           [b (cpu-read (fx+ #x102 sp))])
-      (SP (fx+ 2 sp))
-      (PC (fx+ 1 (fxior a (fxlshift b 8))))
-      (disasm "RTS")
-      ignore-mode-cycle))
-
-  (def-handler (RTI addr)
-    (let* ([sp SP]
-           [sts (cpu-read (fx+ #x101 sp))]
-           ; I guess RTI sets the U flag?
-           [sts (fxior sts (Flag.Unused #:mask))]
-           [pc-lo (cpu-read (fx+ #x102 sp))]
-           [pc-hi (cpu-read (fx+ #x103 sp))])
-      (P sts)
-      (SP (fx+ 3 sp))
-      (PC (fxior pc-lo (fxlshift pc-hi 8)))
-      (disasm "RTI ~a" sts)
-      ignore-mode-cycle))
-
-  (def-handler (PHP addr)
-    (begin (cpu-write (fx+ #x100 SP)
-                      ; I don't see this in the reference, but according to OneLoneCoder
-                      ; "Break flag is set to 1 before push" so let's assume he's correct
-                      (fxior P (Flag.B #:mask)))
-           ; And now the B flag is cleared apparently?
-           (clear-flag Flag.B)
-           (SP (fx- SP 1))
-           (disasm "PHP")
-           ignore-mode-cycle))
-
-  (def-handler (PHA addr)
-    (begin (cpu-write (fx+ #x100 SP) A)
-           (SP (fx- SP 1))
-           (disasm "PHA")
-           ignore-mode-cycle))
-
-  (def-handler (PLA addr)
-    (let ([byte (cpu-read (fx+ #x101 SP))])
-      (SP (fx+ 1 SP))
-      (A byte)
-      (setZN byte)
-      (disasm "PLA")
-      ignore-mode-cycle))
-
-  (def-handler (PLP addr)
-    (let* ([sp SP]
-           [byte (cpu-read (fx+ #x101 sp))]
-           ; Set the U bit
-           [byte (fxior byte (Flag.Unused #:mask))]
-           ; WTF - I'm just guessing here... Do we alwyas clear the B flag here, or do I have some other bug?
-           ; Is this related to OLC "Break flag is set to 1 before push" on the PHP?
-           [byte (fxand byte (Flag.B #:antimask))])
-      (SP (fx+ 1 SP))
-      (P byte)
-      (disasm "PLP")
-      ignore-mode-cycle))
-
-  (define-syntax-rule (define-LD* [id reg ...] ...)
-    (begin
-      (def-handler (id addr)
-        (let ([byte (cpu-read addr)])
-          (disasm "~a ~a =~a" 'id (~h addr 4) (~h byte))
-          (begin (reg byte)
-                 ...)
-          (setZN byte)
-          respect-mode-cycle))
-      ...))
-  (define-LD* [LDX X] [LDY Y] [LDA A]
-    [LAX A X] ; unofficial, sets both A and X
-    )
-
-  (def-handler (AND addr)
-    (let* ([byte (cpu-read addr)]
-           [a (fxand A byte)])
-      (A a)
-      (setZN a)
-      (disasm "AND #$~a" (~h byte))
-      respect-mode-cycle))
-
-  (def-handler (ORA addr)
-    (let* ([byte (cpu-read addr)]
-           [a (fxior A byte)])
-      (A a)
-      (setZN a)
-      (disasm "ORA #$~a" (~h byte))
-      respect-mode-cycle))
-
-  (def-handler (EOR addr)
-    (let* ([byte (cpu-read addr)]
-           [a (fxxor A byte)])
-      (A a)
-      (setZN a)
-      (disasm "EOR #$~a" (~h byte))
-      respect-mode-cycle))
-
-  ; Supports ADC and SBC (and ISB)
-  (define-syntax-rule (adc-helper TODO-VAL)
-    (let* ([a A]
-           [val TODO-VAL]
-           ; Because Flag.C is the lowest bit, masking it will produce 0 or 1
-           [carry (fxand (Flag.C #:mask) P)]
-           [result (fx+ a (fx+ val carry))]
-           ; TODO copied from OneLoneCoder, can this be right?
-           [v-magic (fxand (fxnot (fxxor a val))
-                           (fxxor a result))]
-           [v-magic (fxand v-magic #x80)])
-      (put-flag Flag.C (fx> result 255))
-      (put-flag Flag.V (not (fx= 0 v-magic)))
-      (A (fxand #xFF result))
-      (setZN A)
-      respect-mode-cycle))
-
-  (define-syntax-rule (sbc-helper val)
-    ; Invert the bottom 8 bits and reuse the ADC logic
-    (let ([val (fxand #xFFFF (fxxor #xFF val))])
-      (adc-helper val)))
-
-  (def-handler (ADC addr)
-    (let ([mem (cpu-read addr)])
-      (disasm "ADC #$~a" (~h mem))
-      (adc-helper mem)))
-
-  (def-handler (SBC addr)
-    (let ([mem (cpu-read addr)])
-      (disasm "SBC #$~a" (~h mem))
-      (sbc-helper mem)))
-
-  ; increment/decrement
-  (define-syntax-rule (define-*crements [id register fx+-] ...)
-    (begin
-      (def-handler (id addr)
-        (let* ([result (fx+- register 1)]
-               [result (fxand result #xFF)])
-          (register result)
-          (setZN result)
-          (disasm "~a" 'id)
-          ignore-mode-cycle))
-      ...))
-  (define-*crements [INX X fx+] [INY Y fx+] [DEX X fx-] [DEY Y fx-])
-
-  (def-handler (INC addr)
-    (let* ([byte (cpu-read addr)]
-           [raw (fx+ 1 byte)]
-           [byte (fxand #xFF raw)])
-      (cpu-write addr byte)
-      (setZN byte)
-      (disasm "INC ~a = ~a" (~h addr) (~h byte))
-      ignore-mode-cycle))
-
-  (def-handler (DEC addr)
-    (let* ([byte (cpu-read addr)]
-           [raw (fx- byte 1)]
-           [byte (fxand #xFF raw)])
-      (cpu-write addr byte)
-      (setZN byte)
-      (disasm "DEC ~a = ~a" (~h addr) (~h byte))
-      ignore-mode-cycle))
-
-  (define-syntax-rule (define-comparisons [id register] ...)
-    (begin
-      (def-handler (id addr)
-        (let* ([byte (cpu-read addr)]
-               [diff (fx- register byte)])
-          (put-flag Flag.C (fx>= diff 0))
-          (setZN diff)
-          (disasm "~a #$~a" 'id (~h byte))
-          ; Only CMP *needs* to respect the mode cycle.
-          ; For CPX/CPY the mode cycle will always be zero so it doesn't matter.
-          respect-mode-cycle))
-      ...))
-  (define-comparisons [CMP A] [CPX X] [CPY Y])
-
-  ; DCP is unofficial, something like "DEC then CMP".
-  ; Here's my best guess, hope the tests tell me if it's wrong:
-  (def-handler (DCP addr)
-    (let* ([byte (cpu-read addr)]
-           [byte (fxand #xFF (fx- byte 1))]
-           [diff (fx- A byte)])
-      (cpu-write addr byte)
-      (put-flag Flag.C (fx>= diff 0))
-      (setZN diff)
-      (disasm "DCP ??")
-      respect-mode-cycle))
-
-  ; ISB is unofficial
-  (def-handler (ISB addr)
-    (let* ([byte (cpu-read addr)]
-           [raw (fx+ 1 byte)]
-           [byte (fxand #xFF raw)])
-      (disasm "ISB ???")
-      (cpu-write addr byte)
-      (sbc-helper byte)))
-
-  ; SLO unofficial, something like "ASL then ORA"
-  (def-handler (SLO addr)
-    (let* ([byte (cpu-read addr)]
-           [_ (disasm "SLO ~a = ~a" (~h addr 4) (~h byte))]
-           ; If highest bit was set, carry gets set
-           [_ (put-flag Flag.C (fx= #x80 (fxand #x80 byte)))]
-           [raw (fxlshift byte 1)]
-           [byte (fxand #xFF raw)]
-           [a (fxior A byte)])
-      (cpu-write addr byte)
-      (A a)
-      (setZN a)
-      respect-mode-cycle))
-
-  ; RLA unofficial, something like "ROL then AND"
-  (def-handler (RLA addr)
-    (let* ([byte (cpu-read addr)]
-           [_ (disasm "RLA ~a = ~a" (~h addr 4) (~h byte))]
-           ; Need to read C *before* we overwrite it!
-           [raw (fxlshift byte 1)]
-           [raw (if (get-flag Flag.C)
-                    (fxior 1 raw)
-                    raw)]
-           ; If highest bit was set, carry gets set
-           [_ (put-flag Flag.C (fx= #x80 (fxand #x80 byte)))]
-           ; Write back to memory *before* doing the AND
-           [byte (fxand #xFF raw)]
-           [_ (cpu-write addr byte)]
-           ; Finally, do the AND
-           [byte (fxand A byte)])
-      (A byte)
-      (setZN byte)
-      respect-mode-cycle))
-
-  ; SRE unofficial, something like "LSR then EOR"
-  (def-handler (SRE addr)
-    (let* ([byte (cpu-read addr)]
-           [_ (disasm "SRE ~a = ~a" (~h addr 4) (~h byte))]
-           ; Here don't need to read C, so we can write it immediately
-           [_ (put-flag Flag.C (fx= 1 (fxand 1 byte)))]
-           ; Shift and write to memory
-           [byte (fxrshift byte 1)]
-           [_ (cpu-write addr byte)]
-           ; Now do the EOR
-           [byte (fxxor A byte)])
-      (A byte)
-      (setZN byte)
-      respect-mode-cycle))
-
-  ; RRA unofficial, something like "ROR then ADC"
-  (def-handler (RRA addr)
-    (let* ([orig-byte (cpu-read addr)]
-           [_ (disasm "RRA ~a = ~a" (~h addr 4) (~h orig-byte))]
-           ; Need to read the C flag before we write it
-           [byte (fxior (fxrshift orig-byte 1)
-                        ; C flag is first bit of P, so shift it left 7
-                        (fxlshift (fxand 1 P) 7))])
-      (put-flag Flag.C (fx= 1 (fxand 1 orig-byte)))
-      (cpu-write addr byte)
-      (adc-helper byte)))
-
-  (define-syntax-rule (define-ST* [id val-expr] ...)
-    (begin
-      (def-handler (id addr)
-        (let ([val val-expr])
-          (cpu-write addr val)
-          (disasm "~a $~a = ~a" 'id (~h addr) (~h val))
-          ignore-mode-cycle))
-      ...))
-
-  (define-ST* [STX X] [STY Y] [STA A]
-    [SAX (fxand A X)] ; unofficial, stores A&X
-    )
-
-  (def-handler (BIT addr)
-    (let ([byte (cpu-read addr)])
-      (put-flag Flag.Z (fx= 0 (fxand A byte)))
-      (put-flag Flag.N (not (fx= 0 (fxand byte 128))))
-      (put-flag Flag.V (not (fx= 0 (fxand byte 64))))
-      (disasm "BIT $~a = ~a" (~h addr) (~h A))
-      ignore-mode-cycle))
-
-  (def-handler (BRK addr)
-    (begin (SET! PC (ufx+ 1 PC))
-           (set-flag Flag.I)
-           (cpu-write (ufx+ #x100 SP) (ufxand #xFF (ufxrshift PC 8)))
-           (cpu-write (ufx+ #x0FF SP) (ufxand #xFF PC))
-           (set-flag Flag.B)
-           (cpu-write (ufx+ #x0FE SP) P)
-           (SET! SP (ufx- SP 3))
-           (clear-flag Flag.B)
-           (let ([hi (cpu-read #xFFFE)]
-                 [lo (cpu-read #xFFFF)])
-             (SET! PC (ufxior lo (ufxlshift hi 8))))
-           ignore-mode-cycle))
-
-  (def-handler (NOP addr)
-    (begin
-      (disasm "NOP")
-      ; unofficial NOPs have to respect the mode cycle
-      respect-mode-cycle))
-
-  (define-syntax-rule (define-setters [id flag] ...)
-    (begin
-      (def-handler (id addr)
-        (begin (set-flag flag)
-               (disasm "~a" 'id)
-               ignore-mode-cycle))
-      ...))
-  (define-setters [SEC Flag.C] [SED Flag.D] [SEI Flag.I])
-
-  (define-syntax-rule (define-clearers [id flag] ...)
-    (begin
-      (def-handler (id addr)
-        (begin (clear-flag flag)
-               (disasm "~a" 'id)
-               ignore-mode-cycle))
-      ...))
-  (define-clearers [CLC Flag.C] [CLD Flag.D] [CLI Flag.I] [CLV Flag.V])
-
-  (define-syntax-rule (define-transfers [id src dst] ...)
-    (begin
-      (def-handler (id addr)
-        (let ([byte src])
-          (dst byte)
-          (setZN byte)
-          (disasm "~a" 'id)
-          ignore-mode-cycle))
-      ...))
-  (define-transfers [TAX A X] [TAY A Y] [TXA X A] [TYA Y A] [TSX SP X])
-  ; Oops - TXS does not perform a setZN, so here it is:
-  (def-handler (TXS addr)
-    (let ([byte X])
-      (SP byte)
-      (disasm "TXS")
-      ignore-mode-cycle))
-
-  (define-syntax-rule (define-branch ID condition)
-    ; All the branches support REL mode only, and the timing is always
-    ;   "2 (+1 if branch succeeds, +2 if to a new page)"
-    ; So we ignore base-cycles and mode-cycle here.
-    ; Tricky signed/unsigned math is handled by `get-branch-dest`.
-    (define-syntax-rule (ID #:address .addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
-      (let* ([pc PC]
-             [addr .addr]
-             [addr_abs (get-branch-dest pc addr)])
-        #;(when (ufx= pc 62016)
-            (println (list 'ID pc addr '-> addr_abs)))
-        (disasm "~a $~a" 'ID (~h addr_abs 4))
-        (if condition
-            (let ([cycles (if (fx= (fxand #xFF00 addr_abs)
-                                   (fxand #xFF00 pc))
-                              3
-                              4)])
-              (PC addr_abs)
-              cycles)
-            2))))
-  (define-branch BCS (get-flag Flag.C))
-  (define-branch BCC (not (get-flag Flag.C)))
-  (define-branch BEQ (get-flag Flag.Z))
-  (define-branch BNE (not (get-flag Flag.Z)))
-  (define-branch BVS (get-flag Flag.V))
-  (define-branch BVC (not (get-flag Flag.V)))
-  (define-branch BMI (get-flag Flag.N))
-  (define-branch BPL (not (get-flag Flag.N)))
-
-  (define-syntax-rule (LSR #:address addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
-    (let* ([raw (case opcode
-                  [(#x4A) A]
-                  [else (cpu-read addr)])]
-           [byte (fxrshift raw 1)])
-      ; If lowest bit was set, carry gets set
-      (put-flag Flag.C (fx= 1 (fxand 1 raw)))
-      (setZN byte)
-      (case opcode
-        [(#x4A) (begin ; Accumulator addressing mode
-                  (disasm "LSR A")
-                  (A byte))]
-        [else (begin
-                (disasm "LSR??")
-                (cpu-write addr byte))])
-      base-cycles))
-
-  (define-syntax-rule (ASL #:address addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
-    (let* ([byte (case opcode
-                   [(#x0A) A]
-                   [else (cpu-read addr)])]
-           [raw (fxlshift byte 1)]
-           [byte (fxand #xFF raw)])
-      ; If highest bit was set, carry gets set
-      (put-flag Flag.C (fx= #x100 (fxand #x100 raw)))
-      (setZN byte)
-      (case opcode
-        [(#x0A) (begin ; Accumulator addressing mode
-                  (disasm "ASL A")
-                  (A byte))]
-        [else (begin
-                (disasm "ASL??")
-                (cpu-write addr byte))])
-      base-cycles))
-
-  (define-syntax-rule (ROR #:address addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
-    (let* ([raw (case opcode
-                  [(#x6A) A]
-                  [else (cpu-read addr)])]
-           [byte (fxrshift raw 1)]
-           [byte (fxior byte (if (get-flag Flag.C)
-                                 #x80
-                                 0))])
-      ; If highest bit was set, carry gets set
-      (put-flag Flag.C (fx= 1 (fxand 1 raw)))
-      (setZN byte)
-      (case opcode
-        [(#x6A) (begin ; Accumulator addressing mode
-                  (disasm "ROR A")
-                  (A byte))]
-        [else (begin
-                (disasm "ROR??")
-                (cpu-write addr byte))])
-      base-cycles))
-
-  (define-syntax-rule (ROL #:address addr #:base-cycles base-cycles #:mode-cycle mode-cycle #:opcode opcode)
-    (let* ([byte (case opcode
-                   [(#x2A) A]
-                   [else (cpu-read addr)])]
-           [raw (fxlshift byte 1)]
-           [raw (if (get-flag Flag.C)
-                    (fxior 1 raw)
-                    raw)]
-           [byte (fxand raw #xFF)])
-      (put-flag Flag.C (fx= #x100 (fxand #x100 raw)))
-      (setZN byte)
-      (case opcode
-        [(#x2A) (begin ; accumulator
-                  (disasm "ROL A ~a ~a" byte raw)
-                  (A byte))]
-        [else (begin
-                (disasm "ROL??")
-                (cpu-write addr byte))])
-      base-cycles))
-
-  ; end Instructions
   }
 
 (define-syntax-rule (step)

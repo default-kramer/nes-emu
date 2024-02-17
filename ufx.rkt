@@ -8,7 +8,8 @@
   (require racket/fixnum
            racket/unsafe/ops)
 
-  (require typed/racket/unsafe)
+  ; Using these /wraparound procedures doesn't seem to make a significant difference.
+  #;(require typed/racket/unsafe)
   #;(unsafe-require/typed
      racket/unsafe/ops
      [(unsafe-fx+/wraparound ufx+) (-> Fixnum Fixnum Fixnum)]
