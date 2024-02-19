@@ -374,28 +374,14 @@
     [else
      (void)]))
 
+(define cpu (cpu:make-cpu cpu-read cpu-write))
+
 (: cpu-reset (-> Fixnum))
+(define (cpu-reset) (cpu:cpu-reset cpu))
 (: cpu-step (-> Fixnum))
+(define (cpu-step) (cpu:cpu-step cpu))
 (: cpu-nmi (-> Fixnum))
-(define-values (cpu-reset cpu-step cpu-nmi)
-  (syntax-parameterize
-      ([cpu:cpu-read (lambda (stx)
-                       (syntax-case stx ()
-                         [(_ arg ...) #'(cpu-read arg ...)]))]
-       [cpu:cpu-write (lambda (stx)
-                        (syntax-case stx ()
-                          [(_ arg ...) #'(cpu-write arg ...)]))])
-    (parameterize-syntax-ids
-     (  [cpu:PC PC]
-        [cpu:A A]
-        [cpu:X X]
-        [cpu:Y Y]
-        [cpu:SP SP]
-        [cpu:P P])
-     (define (cpu-reset) (cpu:reset #:address -42 #:opcode -420))
-     (define (cpu-step) (cpu:step))
-     (define (cpu-nmi) (cpu:nmi #:address -42 #:opcode -420))
-     (values cpu-reset cpu-step cpu-nmi))))
+(define (cpu-nmi) (cpu:cpu-nmi cpu))
 
 (: print-some-bytes (-> Fixnum (Listof Byte)))
 (define (print-some-bytes addr)
