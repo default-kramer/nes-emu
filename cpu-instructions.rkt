@@ -1,5 +1,13 @@
 #lang typed/racket
 
+; Remaining cleanup:
+; * Possibly improve the 4 occurrences of Accumulator addressing mode,
+;   in which the handler looks at the opcode.
+;   Update documentation to clarify that the addressing mode proc
+;   returns an "address" and not an "operand".
+; * Maybe test if returning (list address extra-cycles-mask) is faster
+;   than returning (values address extra-cycles-mask).
+
 (require racket/stxparam
          "ufx.rkt"
          (only-in "doodling.rkt" get-branch-dest))
@@ -84,7 +92,7 @@
 (define-syntax-rule (define-registers WISH reg ...)
   (begin (define-register WISH reg) ...))
 
-(define-syntax-rule (define-handlers ooo def-handler-full WISH)
+(define-syntax-rule (define-handlers ooo def-handler-full define-mode WISH)
   ; The handlers within can be reified as macros or as procedures
   ; depending on what the caller provides.
   {begin
@@ -532,6 +540,134 @@
           [else (begin
                   (cpu-write addr byte))])
         no-extra-cycles))
+
+    ; These (reset and nmi) aren't instruction handlers
+    ; but it's convenient to construct them the same way
+    (def-handler-full (reset ignored-addr ignored-opcode)
+      (let ([lo (cpu-read #xFFFC)]
+            [hi (cpu-read #xFFFD)])
+        (set! PC (ufxior lo (ufxlshift hi 8)))
+        (set! A 0)
+        (set! X 0)
+        (set! Y 0)
+        (set! SP #xFD)
+        (set! P (Flag.Unused #:mask))
+        8 ; cycles
+        ))
+
+    (def-handler-full (nmi ignored-addr ignored-opcode)
+      (let ([bits-to-set (ufxior* (Flag.B #:mask)
+                                  (Flag.I #:mask)
+                                  (Flag.Unused #:mask))])
+        (cpu-write (ufx+ #x100 SP) (ufxand #xFF (ufxrshift PC 8)))
+        (cpu-write (ufx+ #x0FF SP) (ufxand #xFF PC))
+        (set! P (ufxior P bits-to-set))
+        (cpu-write (ufx+ #xFE SP) P)
+        (set! SP (ufx- SP 3))
+        (let ([pc-lo (cpu-read #xFFFA)]
+              [pc-hi (cpu-read #xFFFB)])
+          (set! PC (ufxior pc-lo (ufxlshift pc-hi 8)))
+          8 ; cycles
+          )))
+
+    ; end handlers, begin addressing modes
+    (define-mode (ABS)
+      (let* ([lo : Fixnum (cpu-read PC)]
+             [hi : Fixnum (cpu-read (ufx+ 1 PC))]
+             [result (ufxior (ufxlshift hi 8) lo)])
+        (set! PC (ufx+ 2 PC))
+        (values result 0)))
+
+    (define-mode (IMM)
+      (let ([result PC])
+        (set! PC (ufx+ 1 PC))
+        (values result 0)))
+
+    (define-mode (ZP0)
+      (let ([result (cpu-read PC)])
+        (set! PC (ufx+ 1 PC))
+        (values (ufxand result #xFF) 0)))
+
+    (define-mode (IMP)
+      ; I think OLC uses the A register here to support the "Accumulator" mode
+      ; which is used by the shifts... but I will just use zeros
+      (values 0 0))
+
+    (define-mode (REL)
+      (let ([addr (cpu-read PC)]
+            ; The branch instructions can return +1 or +2 extra-cycles
+            [extra-cycles-mask #xFF])
+        (set! PC (ufx+ 1 PC))
+        (values addr extra-cycles-mask)))
+
+    (define-mode (IZX)
+      (let* ([pc PC]
+             [x X]
+             [base (cpu-read pc)]
+             [lo (cpu-read (ufxand #xFF (ufx+ base x)))]
+             [hi (cpu-read (ufxand #xFF (ufx+ base (ufx+ x 1))))]
+             [addr (ufxior lo (ufxlshift hi 8))])
+        (set! PC (ufx+ 1 pc))
+        (values addr 0)))
+
+    (define-mode (IZY)
+      (let* ([pc PC]
+             [y Y]
+             [base (cpu-read pc)]
+             [lo (cpu-read base)]
+             [hi (cpu-read (ufxand #xFF (ufx+ 1 base)))]
+             [hi (ufxlshift hi 8)] ; shift `hi` immediately
+             [addr (ufxior lo hi)]
+             [addr (ufxand #xFFFF (ufx+ addr y))]
+             ; now test whether the high byte of `addr` still matches `hi`
+             [extra-cycle (if (ufx= hi (ufxand #xFF00 addr))
+                              0
+                              1)])
+        (set! PC (ufx+ 1 pc))
+        (values addr extra-cycle)))
+
+    (define-mode (IND)
+      (let* ([pc PC]
+             [pointer-lo (cpu-read pc)]
+             [pointer-hi (cpu-read (ufx+ 1 pc))]
+             [pointer (ufxior pointer-lo (ufxlshift pointer-hi 8))]
+             [addr-lo (cpu-read pointer)]
+             [addr-hi (if (ufx= pointer-lo #xFF)
+                          (cpu-read (ufxand pointer #xFF00))
+                          (cpu-read (ufx+ 1 pointer)))]
+             [addr (ufxior addr-lo (ufxlshift addr-hi 8))])
+        (set! PC (ufx+ 1 pc))
+        (values addr 0)))
+
+    (define-syntax-rule (define-AB* [id reg] ooo)
+      (begin (define-mode (id)
+               (let* ([pc PC]
+                      [lo (cpu-read pc)]
+                      [hi (cpu-read (ufx+ 1 pc))]
+                      [hi (ufxlshift hi 8)]
+                      [addr (ufxior lo hi)]
+                      [addr (ufxand #xFFFF (ufx+ addr reg))]
+                      ; test whether `hi` still matches the high byte of `addr`
+                      [extra-cycle (if (ufx= hi (ufxand #xFF00 addr))
+                                       0
+                                       1)])
+                 (set! PC (ufx+ 2 PC))
+                 (values addr extra-cycle)))
+             ooo))
+    (define-AB* [ABX X] [ABY Y])
+
+    (define-syntax-rule (define-ZP* [id reg] ooo)
+      (begin (define-mode (id)
+               (let* ([pc PC]
+                      [addr (cpu-read pc)]
+                      ; always page 0 (mask the high byte off)
+                      [addr (ufxand #x00FF (ufx+ reg addr))])
+                 (set! PC (ufx+ 1 pc))
+                 (values addr 0)))
+             ooo))
+    (define-ZP* [ZPX X] [ZPY Y])
+
+    ; end Addressing Modes
     })
 
 {module+ as-macros
@@ -569,10 +705,17 @@
       [(_ (id operand opcode) body ...)
        #'(begin
            (provide id)
-           (define-syntax-rule (id #:address operand #:base-cycles base-cycles #:extra-cycles-mask extra-cycles-mask #:opcode opcode)
+           (define-syntax-rule (id #:address operand #:opcode opcode)
              (let ([extra-cycles (ann (let () body ...) Fixnum)])
-               ; Return adjusted cycle count.
-               (ufx+ base-cycles (ufxand extra-cycles-mask extra-cycles)))))]))
+               extra-cycles)))]))
+
+  (define-syntax (def-mode stx)
+    (syntax-case stx ()
+      [(_ (id) body ...)
+       #'(begin
+           (provide id)
+           (define-syntax-rule (id)
+             (begin body ...)))]))
 
   (define-syntax (wish stx)
     (syntax-case stx ()
@@ -588,10 +731,13 @@
        (syntax/loc stx
          (cpu-read addr))]))
 
-  (define-handlers ... def-handler wish)
+  (define-handlers ... def-handler def-mode wish)
   }
 
 {module+ struct-and-procs
+  ; Each handler will also be provided
+  (provide (struct-out cpu) CPU)
+
   (struct cpu ([PC : Fixnum]
                [A : Fixnum]
                [X : Fixnum]
@@ -605,6 +751,9 @@
   #;(CPU operand opcode -> extra-cycles)
   (define-type InstructionHandler (-> CPU Fixnum Fixnum Fixnum))
 
+  #;(CPU -> address extra-cycles-mask)
+  (define-type AddressingMode (-> CPU (Values Fixnum Fixnum)))
+
   (define-syntax-parameter the-cpu
     (lambda (stx)
       (raise-syntax-error 'the-cpu "not parameterized" stx)))
@@ -615,6 +764,13 @@
            (define (id cpu-arg operand opcode)
              (syntax-parameterize ([the-cpu (lambda (stx) #'cpu-arg)])
                (ann (let () body ...) Fixnum)))))
+
+  (define-syntax-rule (def-mode (id) body ...)
+    (begin (provide id)
+           (: id AddressingMode)
+           (define (id cpu-arg)
+             (syntax-parameterize ([the-cpu (lambda (stx) #'cpu-arg)])
+               body ...))))
 
   (define-syntax (wish stx)
     (syntax-case stx ()
@@ -643,7 +799,7 @@
        (syntax/loc stx
          ((cpu-read-proc the-cpu) addr))]))
 
-  (define-handlers ... def-handler wish)
+  (define-handlers ... def-handler def-mode wish)
   }
 
 (module+ main

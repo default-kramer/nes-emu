@@ -392,9 +392,9 @@
         [cpu:Y Y]
         [cpu:SP SP]
         [cpu:P P])
-     (define (cpu-reset) (cpu:reset))
+     (define (cpu-reset) (cpu:reset #:address -42 #:opcode -420))
      (define (cpu-step) (cpu:step))
-     (define (cpu-nmi) (cpu:nmi))
+     (define (cpu-nmi) (cpu:nmi #:address -42 #:opcode -420))
      (values cpu-reset cpu-step cpu-nmi))))
 
 (: print-some-bytes (-> Fixnum (Listof Byte)))
