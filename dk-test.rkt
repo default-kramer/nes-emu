@@ -60,6 +60,8 @@
 
 (define-multi
   [system-clock : Fixnum 0]
+  [frame-count : Fixnum 0]
+  [bg-hash : Fixnum 17]
   [cpu-cycles : Fixnum 0])
 
 ; PPU stuff that's actually hidden from the PPU implementation behind
@@ -235,11 +237,11 @@
 
 (: compose-pixel! (-> Fixnum Fixnum Byte Byte Any))
 (define (compose-pixel! cycle scanline bg-palette bg-pixel)
+  (define hash-input (ufxior bg-pixel (ufxlshift bg-palette 2)))
+  (set! bg-hash (ufxand #x3FFFFFFF (ufx+ hash-input (ufx* bg-hash 31))))
   (let* ([x (ufx- cycle 1)]
          [y scanline]
-         [addr (ufxior* #x3F00
-                        (ufxlshift bg-palette 2)
-                        bg-pixel)]
+         [addr (ufxior* #x3F00 hash-input)]
          [index (ppu-read addr)])
     #;(when (or (ufx= system-clock 357192)
                 (ufx= system-clock 357191)
@@ -394,22 +396,26 @@
 
 (define-syntax-rule (adjust-cycles expr)
   ; Let's immediately adjust the CPU cycles to match the system clock
-  (ufx* 3 expr))
+  #;(ufx* 3 expr)
+  ; NOPE can't do that... because the NMI is not guaranteed to happen on
+  ; a multiple of 3, so we need to do it the other way
+  expr)
 
 (define (bus-reset)
   (set! cpu-cycles (adjust-cycles (cpu-reset)))
   (ppu-reset)
   (set! system-clock 0))
 
-;(define ppulog (open-output-file "my-ppulog.txt" #:exists 'replace))
+(define ppulog (open-output-file "./test-logs/dk-test.actual.bghash.txt" #:exists 'replace))
 
 (define (blah)
   (adjust-cycles (cpu-step)))
 
 (define (todo-cpu)
-  (when (ufx= 0 cpu-cycles)
-    (set! cpu-cycles (blah)))
-  (set! cpu-cycles (ufx- cpu-cycles 1)))
+  (when (ufx= 0 (ufxmodulo system-clock 3))
+    (when (ufx= 0 cpu-cycles)
+      (set! cpu-cycles (blah)))
+    (set! cpu-cycles (ufx- cpu-cycles 1))))
 
 (define (todo-nmi)
   (when nmi?
@@ -417,13 +423,20 @@
     (set! cpu-cycles (adjust-cycles (cpu-nmi)))))
 
 (define (bus-clock)
+  (set! frame-complete? #f)
   (ppu-clock)
   ; Log PPU stuff before stepping the CPU to match my hacked up OLC logging
-  #;(display* #:port ppulog
-              system-clock" "current-pixel-x","current-pixel-y
-              "="log-pixel-index" "log-pixel-addr" "vram-addr
-              " "ppustatus" "ppu-data-buffer" "bg-shifter-pattern-lo" "fine-x
-              " "bg-next-tile-msb" "bg-next-tile-lsb" "bg-next-tile-id"\n")
+  #;(when (and (frame-count . > . 1355)
+               (frame-count . < . 1358))
+      (display* #:port ppulog
+                system-clock" "current-pixel-x","current-pixel-y
+                "="log-pixel-index" "log-pixel-addr" "vram-addr" "tram-addr
+                " "ppustatus" "ppu-data-buffer" "bg-shifter-pattern-lo" "fine-x
+                " "bg-next-tile-msb" "bg-next-tile-lsb" "bg-next-tile-id"\n"))
+  (when frame-complete?
+    (set! frame-count (ufx+ 1 frame-count))
+    (display* #:port ppulog
+              frame-count" "bg-hash"\n"))
 
   ;(when (ufx= 0 (ufxmodulo system-clock 3))
   ;(when (ufx= 0 cpu-cycles)
@@ -447,7 +460,11 @@
   (bus-reset)
   (with-handlers ([exn? (lambda (e)
                           (println (list "FATAL ERROR" e)))])
-    (for ([i (in-range 714387 #;982411)])
-      (bus-clock)))
+    (let loop ()
+      (bus-clock)
+      (when (< frame-count 2370)
+        (loop)))
+    #;(for ([i (in-range 714387 #;982411)])
+        (bus-clock)))
   #;(close-output-port cpulog)
-  #;(close-output-port ppulog))
+  (close-output-port ppulog))
