@@ -6,8 +6,11 @@
          current-pixel-x
          current-pixel-y)
 
+(define ppulog #f
+  #;(open-output-file "./test-logs/dk-test.actual.bghash.txt" #:exists 'replace))
+
 (require (prefix-in cpu: "cpu.rkt")
-         (prefix-in ppu: "ppu.rkt")
+         (prefix-in ppu: "core/ppu.rkt")
          "ufx.rkt"
          "util.rkt"
          racket/stxparam
@@ -28,41 +31,11 @@
          ...))
 
 (define-multi
-  ; CPU registers
-  [PC : Fixnum 0]
-  [A : Fixnum 0]
-  [X : Fixnum 0]
-  [Y : Fixnum 0]
-  [SP : Fixnum 0]
-  [P : Fixnum 0]
-  ; PPU registers
-  [scanline : Fixnum 0]
-  [cycle : Fixnum 0]
-  [ppuctrl : Fixnum 0]
-  [ppumask : Fixnum 0]
-  [ppustatus : Fixnum 0]
-  [fine-x : Fixnum 0]
-  [ppu-data-buffer : Byte 0]
-  [frame-complete? : Boolean #f]
-  [nmi? : Boolean #f]
-  [address-latch? : Boolean #f]
-  [bg-shifter-pattern-lo : Fixnum 0]
-  [bg-shifter-pattern-hi : Fixnum 0]
-  [bg-shifter-attrib-lo : Fixnum 0]
-  [bg-shifter-attrib-hi : Fixnum 0]
-  [bg-next-tile-lsb : Fixnum 0]
-  [bg-next-tile-msb : Fixnum 0]
-  [bg-next-tile-id : Fixnum 0]
-  [bg-next-tile-attrib : Fixnum 0]
-  [vram-addr : Fixnum 0]
-  [tram-addr : Fixnum 0]
-  )
-
-(define-multi
   [system-clock : Fixnum 0]
   [frame-count : Fixnum 0]
   [bg-hash : Fixnum 17]
-  [cpu-cycles : Fixnum 0])
+  [cpu-cycles : Fixnum 0]
+  [frame-complete? : Boolean #f])
 
 ; PPU stuff that's actually hidden from the PPU implementation behind
 ; the read/write syntax parameters.
@@ -97,8 +70,8 @@
       [(#x1C) #xC]
       [else addr])))
 
-(: ppu-read (-> Fixnum Byte))
-(define (ppu-read addr)
+(: ppu-read (-> Fixnum Fixnum Byte))
+(define (ppu-read addr ppumask)
   (let ([addr (ufxand #x3FFF addr)])
     (cond
       [(ufx< addr #x2000)
@@ -235,86 +208,20 @@
                                     [0x3E 0 0 0]
                                     [0x3F 0 0 0]))
 
-(: compose-pixel! (-> Fixnum Fixnum Byte Byte Any))
-(define (compose-pixel! cycle scanline bg-palette bg-pixel)
-  (define hash-input (ufxior bg-pixel (ufxlshift bg-palette 2)))
-  (set! bg-hash (ufxand #x3FFFFFFF (ufx+ hash-input (ufx* bg-hash 31))))
-  (let* ([x (ufx- cycle 1)]
-         [y scanline]
-         [addr (ufxior* #x3F00 hash-input)]
-         [index (ppu-read addr)])
-    #;(when (or (ufx= system-clock 357192)
-                (ufx= system-clock 357191)
-                (ufx= system-clock 357190))
-        (let* ([bit-mux (ufxrshift #x8000 fine-x)]
-               [p0-pixel (ufxand bg-shifter-pattern-lo bit-mux)]
-               [p1-pixel (ufxand bg-shifter-pattern-hi bit-mux)]
-               [bg-pal0 (ufxand bg-shifter-attrib-lo bit-mux)]
-               [bg-pal1 (ufxand bg-shifter-attrib-hi bit-mux)]
-               [bg-pixel (ufxand #xFF (ufxior p0-pixel (ufxlshift p1-pixel 1)))]
-               [bg-palette (ufxand #xFF (ufxior bg-pal0 (ufxlshift bg-pal1 1)))])
-          (println (list 'ppumask ppumask
-                         'cycle cycle
-                         'scanline scanline
-                         'bg-shifter-pattern-lo bg-shifter-pattern-lo
-                         'bg-shifter-pattern-hi bg-shifter-pattern-hi
-                         'bit-mux bit-mux
-                         'p0-pixel p0-pixel
-                         'p1-pixel p1-pixel
-                         'bg-pal0 bg-pal0
-                         'bg-pal1 bg-pal1
-                         'bg-pixel bg-pixel
-                         'bg-palette bg-palette))))
-    (set! log-pixel-addr addr)
-    (set! log-pixel-index index)
-    (set! current-pixel (unsafe-vector-ref pal-screen (ufxand #x3F index)))
-    (set! current-pixel-x x)
-    (set! current-pixel-y y)))
-
-
 (: ppu-reset (-> Void))
-(: ppu-clock (-> Void))
-(: ppu-register-write (-> Fixnum Fixnum Void))
+(: ppu-clock (-> (Values Fixnum Fixnum Fixnum)))
+(: ppu-get-state (-> ppu:PPUState))
+(: ppu-register-write (-> Fixnum Byte Void))
 (: ppu-register-read (-> Fixnum Byte))
-(define-values (ppu-reset ppu-clock ppu-register-write ppu-register-read)
-  (syntax-parameterize
-      ([ppu:ppu-read (lambda (stx)
-                       (syntax-case stx ()
-                         [(_ arg ...) #'(ppu-read arg ...)]))]
-       [ppu:ppu-write (lambda (stx)
-                        (syntax-case stx ()
-                          [(_ arg ...) #'(ppu-write arg ...)]))]
-       [ppu:compose-pixel! (lambda (stx)
-                             (syntax-case stx ()
-                               [(_ arg ...) #'(compose-pixel! arg ...)]))])
-    (parameterize-syntax-ids
-     (  [ppu:scanline scanline]
-        [ppu:cycle cycle]
-        [ppu:ppuctrl ppuctrl]
-        [ppu:ppumask ppumask]
-        [ppu:ppustatus ppustatus]
-        [ppu:fine-x fine-x]
-        [ppu:ppu-data-buffer ppu-data-buffer]
-        [ppu:frame-complete? frame-complete?]
-        [ppu:nmi? nmi?]
-        [ppu:address-latch? address-latch?]
-        [ppu:bg-shifter-pattern-lo bg-shifter-pattern-lo]
-        [ppu:bg-shifter-pattern-hi bg-shifter-pattern-hi]
-        [ppu:bg-shifter-attrib-lo bg-shifter-attrib-lo]
-        [ppu:bg-shifter-attrib-hi bg-shifter-attrib-hi]
-        [ppu:bg-next-tile-lsb bg-next-tile-lsb]
-        [ppu:bg-next-tile-msb bg-next-tile-msb]
-        [ppu:bg-next-tile-id bg-next-tile-id]
-        [ppu:bg-next-tile-attrib bg-next-tile-attrib]
-        [ppu:vram-addr vram-addr]
-        [ppu:tram-addr tram-addr])
-     (define (ppu-reset) (ppu:reset))
-     (define (ppu-clock) (ppu:clock))
-     (define (ppu-reg-write [addr : Fixnum] [value : Fixnum])
-       (ppu:cpu-write addr value))
-     (define (ppu-reg-read [addr : Fixnum])
-       (ppu:cpu-read addr))
-     (values ppu-reset ppu-clock ppu-reg-write ppu-reg-read))))
+(define-values (ppu-clock ppu-reset ppu-get-state ppu-register-read ppu-register-write)
+  (let ()
+    (define-syntax (wish stx)
+      (syntax-case stx ()
+        [(_ #:ppu-read addr ppumask)
+         (syntax/loc stx (ppu-read addr ppumask))]
+        [(_ #:ppu-write addr val)
+         (syntax/loc stx (ppu-write addr val))]))
+    (ppu:compile-ppu #:wish wish)))
 
 ; Have to define the CPU after the PPU because cpu-write
 ; needs to contain ppu-register-write.
@@ -371,7 +278,7 @@
            (display* #:port ppulog
                      "cpuwrite case 6.? "value"\n"))
        #;(println (list "GOT CPU WRITE TO PPU" addr cycle scanline system-clock))
-       (ppu-register-write addr value))]
+       (ppu-register-write addr (ufxand 255 value)))]
     ; TODO also need controller stuff at $4016
     [else
      (void)]))
@@ -406,25 +313,31 @@
   (ppu-reset)
   (set! system-clock 0))
 
-(define ppulog (open-output-file "./test-logs/dk-test.actual.bghash.txt" #:exists 'replace))
-
-(define (blah)
-  (adjust-cycles (cpu-step)))
-
-(define (todo-cpu)
-  (when (ufx= 0 (ufxmodulo system-clock 3))
-    (when (ufx= 0 cpu-cycles)
-      (set! cpu-cycles (blah)))
-    (set! cpu-cycles (ufx- cpu-cycles 1))))
-
-(define (todo-nmi)
-  (when nmi?
-    (set! nmi? #f)
-    (set! cpu-cycles (adjust-cycles (cpu-nmi)))))
+(define-syntax-rule (compose-pixel2 x y index)
+  (let ([x (ann x Fixnum)]
+        [y (ann y Fixnum)]
+        [index (ann index Fixnum)])
+    #;(assert 0 <= index <= #x3F)
+    ;(define hash-input (ufxior bg-pixel (ufxlshift bg-palette 2)))
+    (set! bg-hash (ufxand #x3FFFFFFF (ufx+ index (ufx* bg-hash 31))))
+    ;(set! log-pixel-addr addr)
+    (set! log-pixel-index index)
+    (set! current-pixel (unsafe-vector-ref pal-screen index))
+    (set! current-pixel-x x)
+    (set! current-pixel-y y)))
 
 (define (bus-clock)
-  (set! frame-complete? #f)
-  (ppu-clock)
+  (define-syntax-rule (has-bit? bit val)
+    (ufx= bit (ufxand bit val)))
+  (define-values (ppu-clock-result pixel-x pixel-y)
+    (ppu-clock))
+
+  ; WARNING should be using constants for these masks:
+  (set! frame-complete? (has-bit? #x80 ppu-clock-result))
+  (define nmi? (has-bit? #x40 ppu-clock-result))
+  (define pixel-index (ufxand #x3F ppu-clock-result))
+  (compose-pixel2 pixel-x pixel-y pixel-index)
+
   ; Log PPU stuff before stepping the CPU to match my hacked up OLC logging
   #;(when (and (frame-count . > . 1355)
                (frame-count . < . 1358))
@@ -433,20 +346,22 @@
                 "="log-pixel-index" "log-pixel-addr" "vram-addr" "tram-addr
                 " "ppustatus" "ppu-data-buffer" "bg-shifter-pattern-lo" "fine-x
                 " "bg-next-tile-msb" "bg-next-tile-lsb" "bg-next-tile-id"\n"))
+  #;(when ppulog
+      (display* #:port ppulog pixel-x","pixel-y" = "pixel-index"\n"))
   (when frame-complete?
     (set! frame-count (ufx+ 1 frame-count))
-    (display* #:port ppulog
-              frame-count" "bg-hash"\n"))
+    (when ppulog
+      (display* #:port ppulog
+                frame-count" "bg-hash"\n")))
 
-  ;(when (ufx= 0 (ufxmodulo system-clock 3))
-  ;(when (ufx= 0 cpu-cycles)
-  ; (set! cpu-cycles (adjust-cycles (cpu-step))))
-  ;(set! cpu-cycles (ufx- cpu-cycles 1))
-  (todo-cpu)
-  ;(when nmi?
-  ; (set! nmi? #f)
-  ;(set! cpu-cycles (adjust-cycles (cpu-nmi))))
-  (todo-nmi)
+  (when (ufx= 0 (ufxmodulo system-clock 3))
+    (when (ufx= 0 cpu-cycles)
+      (set! cpu-cycles (adjust-cycles (cpu-step))))
+    (set! cpu-cycles (ufx- cpu-cycles 1)))
+
+  (when nmi?
+    (set! cpu-cycles (adjust-cycles (cpu-nmi))))
+
   (set! system-clock (ufx+ 1 system-clock)))
 
 (: TODO (-> Boolean))
@@ -454,7 +369,6 @@
   (and frame-complete?
        (begin (set! frame-complete? #f)
               #t)))
-
 
 (module+ test
   (bus-reset)
@@ -467,4 +381,5 @@
     #;(for ([i (in-range 714387 #;982411)])
         (bus-clock)))
   #;(close-output-port cpulog)
-  (close-output-port ppulog))
+  (when ppulog
+    (close-output-port ppulog)))
