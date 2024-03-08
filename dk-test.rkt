@@ -6,15 +6,15 @@
          current-pixel-x
          current-pixel-y)
 
-(define ppulog #f
-  #;(open-output-file "./test-logs/dk-test.actual.bghash.txt" #:exists 'replace))
-
 (require (prefix-in cpu: "cpu.rkt")
          (prefix-in ppu: "core/ppu.rkt")
          "ufx.rkt"
          "util.rkt"
          racket/stxparam
          racket/unsafe/ops)
+
+(module+ test
+  (require typed/rackunit))
 
 (: cart-bytes Bytes)
 (define cart-bytes
@@ -326,7 +326,7 @@
     (set! current-pixel-x x)
     (set! current-pixel-y y)))
 
-(define (bus-clock)
+(define (bus-clock [ppulog : (U #f Output-Port) #f])
   (define-syntax-rule (has-bit? bit val)
     (ufx= bit (ufxand bit val)))
   (define-values (ppu-clock-result pixel-x pixel-y)
@@ -371,15 +371,19 @@
               #t)))
 
 (module+ test
-  (bus-reset)
-  (with-handlers ([exn? (lambda (e)
-                          (println (list "FATAL ERROR" e)))])
-    (let loop ()
-      (bus-clock)
-      (when (< frame-count 2370)
-        (loop)))
-    #;(for ([i (in-range 714387 #;982411)])
-        (bus-clock)))
-  #;(close-output-port cpulog)
-  (when ppulog
-    (close-output-port ppulog)))
+  (let ()
+    (define actual-path "./test-logs/dk-test.actual.bghash.txt")
+    (define expected-path "./test-logs/dk-test.expected.bghash.txt")
+    (bus-reset)
+    (let ([ppulog (open-output-file actual-path #:exists 'replace)])
+      (with-handlers ([exn? (lambda (e)
+                              (println (list "FATAL ERROR" e)))])
+        (let loop ()
+          (bus-clock ppulog)
+          (when (< frame-count 2370)
+            (loop))))
+      (close-output-port ppulog))
+    (let* ([expected (port->string (open-input-file expected-path))]
+           [actual (port->string (open-input-file actual-path))])
+      (when (not (equal? actual expected))
+        (fail (format "files differ: ~a vs ~a" expected-path actual-path))))))
