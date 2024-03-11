@@ -4,14 +4,59 @@
 (module+ internals
   (provide define-ppu))
 
-(require "../util.rkt"
+(require racket/unsafe/ops
+         "../util.rkt"
          "../ufx.rkt")
 
 (module+ test (require typed/rackunit))
 
+(define-syntax-rule (assert condition)
+  (begin
+    #;(when (not condition)
+        (error "Assert failed:" 'condition))
+    (void)))
+
+(struct sprite-info ([y : Byte]
+                     [id : Byte]
+                     [attribute : Byte]
+                     [x : Byte])
+  #:mutable)
+
+
+; Every Sprite-Info-Table must have 72 entries, 64 for OAM + 8 for internal use
+(define-type Sprite-Info-Table (Immutable-Vectorof sprite-info))
+(define (make-sprite-info-table)
+  (let* ([count 72]
+         [items (build-list count (lambda (i) (sprite-info 0 0 0 0)))]
+         [vec (apply vector-immutable items)])
+    (ann vec Sprite-Info-Table)))
+
 (define mask-pixel-index #x3F)
 (define mask-nmi? #x40)
 (define mask-frame-complete? #x80)
+
+; for/fixnum - because Typed Racket seems to struggle with:
+#;(for ([i : Fixnum (in-range (ann 5 Fixnum))])
+    (println i))
+(define-syntax-rule (for/fixnum ([i #:from start #:until end]) body ...)
+  (let loop ([i : Fixnum start])
+    (when (ufx< i end)
+      body ...
+      (loop (ufx+ 1 i)))))
+
+(define-syntax-rule (flip-byte b)
+  (let* ([x (ann b Byte)]
+         [x (ufxior (ufxrshift (ufxand x #xF0) 4)
+                    (ufxlshift (ufxand x #x0F) 4))]
+         [x (ufxior (ufxrshift (ufxand x #xCC) 2)
+                    (ufxlshift (ufxand x #x33) 2))]
+         [x (ufxior (ufxrshift (ufxand x #xAA) 1)
+                    (ufxlshift (ufxand x #x55) 1))])
+    (ann (ufxand 255 x) Byte)))
+(module+ test
+  (check-equal? (flip-byte #b10110010) #b01001101)
+  (check-equal? (flip-byte 255) 255)
+  (check-equal? (flip-byte 0) 0))
 
 (define-syntax-rule (define-register WISH reg)
   (define-syntax reg
@@ -31,7 +76,8 @@
                       #:clock clock
                       #:reset reset
                       #:register-read register-read
-                      #:register-write register-write)
+                      #:register-write register-write
+                      #:dma-write dma-write)
   {begin
     (define-registers WISH
       scanline ; int16
@@ -45,6 +91,7 @@
       ;frame-complete? ; boolean
       ;nmi? ; boolean
       address-latch? ; boolean
+      oam-addr ; uint8
 
       ; Background rendering
       bg-next-tile-lsb ; uint8
@@ -57,6 +104,11 @@
       bg-shifter-attrib-hi ; uint16
       vram-addr ; loopy, uint16
       tram-addr ; loopy, uint16
+
+      ; Foreground
+      sprite-count ; uint8, should never exceed 8
+      sprite-zero-hit-possible? ; bool
+      sprite-zero-being-rendered? ; bool
       )
     #;(: ppu-read (-> Fixnum Fixnum Byte))
     (define-syntax-rule (ppu-read addr)
@@ -65,9 +117,47 @@
     #;(: ppu-write (-> Fixnum Byte Void))
     (define-syntax-rule (ppu-write addr val)
       (WISH #:ppu-write addr val))
+    (define-syntax-rule (get-sprite-table)
+      (ann (WISH #:get-sprite-table) Sprite-Info-Table))
+    (define-syntax-rule (get-sprite-shifter i)
+      (ann (WISH #:get-sprite-shifter i) Byte))
+    (define-syntax-rule (set-sprite-shifter! i val)
+      (WISH #:set-sprite-shifter i (ann val Byte)))
     ; =================================
     ; do not use WISH beyond this point
     ; =================================
+    (define-syntax-rule (get-sprite-info index)
+      (begin
+        (assert (and (ufx>= index 0)
+                     (ufx<= index 63)))
+        (unsafe-vector-ref (get-sprite-table) index)))
+    (define-syntax-rule (get-internal-sprite-info index)
+      ; The first 64 are OAM, followed by 8 internal
+      (begin
+        (assert (and (ufx>= index 0)
+                     (ufx<= index 7)))
+        (let ([i (ufxior 64 index)])
+          (unsafe-vector-ref (get-sprite-table) index))))
+    (define-syntax-rule (get-sprite-shifter-lo i)
+      (begin
+        (assert (and (ufx>= i 0)
+                     (ufx<= i 7)))
+        (get-sprite-shifter i)))
+    (define-syntax-rule (get-sprite-shifter-hi i)
+      (begin
+        (assert (and (ufx>= i 0)
+                     (ufx<= i 7)))
+        (get-sprite-shifter (ufxior 8 i))))
+    (define-syntax-rule (set-sprite-shifter-lo! i val)
+      (begin
+        (assert (and (ufx>= i 0)
+                     (ufx<= i 7)))
+        (set-sprite-shifter! i val)))
+    (define-syntax-rule (set-sprite-shifter-hi! i val)
+      (begin
+        (assert (and (ufx>= i 0)
+                     (ufx<= i 7)))
+        (set-sprite-shifter! (ufxior 8 i) val)))
 
     (define-maskers
       [#b0000000000011111 /coarse-x]
@@ -165,7 +255,23 @@
           (shift-left! bg-shifter-pattern-lo
                        bg-shifter-pattern-hi
                        bg-shifter-attrib-lo
-                       bg-shifter-attrib-hi))))
+                       bg-shifter-attrib-hi))
+        (when (and (ufx>= cycle 1)
+                   (ufx< cycle 258)
+                   (has-any-flag? ppumask /render-sprites?))
+          (let ([sprite-table (get-sprite-table)])
+            (let loop ([i : Fixnum sprite-count])
+              (let* ([internal-sprite (get-internal-sprite-info i)]
+                     [sprite-x : Byte (sprite-info-x internal-sprite)])
+                (if (ufx> sprite-x 0)
+                    (let ([sprite-x : Byte (ufx- sprite-x 1)])
+                      (set-sprite-info-x! internal-sprite sprite-x))
+                    (let ([lo (get-sprite-shifter-lo i)]
+                          [hi (get-sprite-shifter-hi i)])
+                      (set-sprite-shifter-lo! i (ufxand 255 (ufxlshift lo 1)))
+                      (set-sprite-shifter-hi! i (ufxand 255 (ufxlshift hi 1))))))
+              (when (not (ufx= 0 i))
+                (loop (ufx+ -1 i))))))))
 
     (define-syntax-rule (clock-main-loop)
       (when (or (and (ufx>= cycle 2)
@@ -226,6 +332,128 @@
     (define-syntax-rule (cycle6)
       (cycle46 bg-next-tile-msb 8))
 
+    (define-syntax-rule (clear-sprite-shifters)
+      (for ([i : Fixnum '(0 1 2 3 4 5 6 7)])
+        (set-sprite-shifter-lo! i 0)
+        (set-sprite-shifter-hi! i 0)))
+
+    (define-syntax-rule (evaluate-sprites)
+      {begin
+        (for ([i '(0 1 2 3 4 5 6 7)])
+          (let ([si (get-internal-sprite-info i)])
+            ; I think just setting Y is enough... pushes them offscreen I guess?
+            (set-sprite-info-y! si 255)
+            (set-sprite-info-y! si 255)
+            (set-sprite-info-y! si 255)
+            (set-sprite-info-y! si 255)))
+        (set! sprite-count 0)
+        (clear-sprite-shifters)
+        (set! sprite-zero-hit-possible? #f)
+        (let ([sprite-size (if (ufx= 0 (/sprite-size? ppuctrl #:unshifted)) 8 16)])
+          ; Note - OLC definitely has some bugs here which I attempt to fix.
+          ; This loop will allow sprite-count to go to 9 to detect sprite overflow,
+          ; but we will immediately clamp it back down to 8 if that happens.
+          (let loop ([oam-index : Fixnum 0])
+            (when (and (ufx< oam-index 64)
+                       (ufx< sprite-count 9))
+              (let* ([entry (get-sprite-info oam-index)]
+                     [diff (ufx- scanline (sprite-info-y entry))])
+                (when (and (ufx>= diff 0)
+                           (ufx< diff sprite-size))
+                  (when (ufx< sprite-count 8)
+                    (when (ufx= 0 oam-index)
+                      (set! sprite-zero-hit-possible? #t))
+                    (let ([internal (get-internal-sprite-info sprite-count)])
+                      ; Copy from OAM into internal
+                      (set-sprite-info-y!         internal (sprite-info-y         entry))
+                      (set-sprite-info-id!        internal (sprite-info-id        entry))
+                      (set-sprite-info-attribute! internal (sprite-info-attribute entry))
+                      (set-sprite-info-x!         internal (sprite-info-x         entry))))
+                  (set! sprite-count (ufx+ 1 sprite-count)))
+                (loop (ufx+ 1 oam-index))))))
+        (if (ufx<= sprite-count 8)
+            (/sprite-overflow? ppustatus #:set! 0)
+            (begin
+              (/sprite-overflow? ppustatus #:set! 1)
+              (set! sprite-count 8)))
+        })
+
+    (define-syntax-rule (prepare-sprite-shifters)
+      {begin
+        (define is-8x8? (ufx= 0 (/sprite-size? ppuctrl #:unshifted)))
+        (for/fixnum ([i #:from 0 #:until sprite-count])
+          (assert (ufx< i 8))
+          (define sprite (get-internal-sprite-info i))
+          (define flip-vertical? (ufx= #x80 (ufxand #x80 (sprite-info-attribute sprite))))
+          (define flip-horizontal? (ufx= #x40 (ufxand #x40 (sprite-info-attribute sprite))))
+          (define sprite-pattern-addr-lo : Fixnum
+            (if is-8x8?
+                (let ([base (ufxior (ufxlshift (/pattern-sprite? ppuctrl #:shifted) 12)
+                                    (ufxlshift (sprite-info-id sprite) 4))]
+                      [row (ufx- scanline (sprite-info-y sprite))])
+                  (if flip-vertical?
+                      (ufxior base (ufx- 7 row))
+                      (ufxior base row)))
+                ; else we are in 8x16 mode:
+                (error "TODO 8x16 here")))
+          ; OLC: Hi bit plane equivalent is always offset by 8 bytes from lo bit plane
+          (define sprite-pattern-addr-hi (ufx+ 8 sprite-pattern-addr-lo))
+
+          (let* ([sprite-pattern-bits-lo : Byte (ppu-read sprite-pattern-addr-lo)]
+                 [sprite-pattern-bits-hi : Byte (ppu-read sprite-pattern-addr-hi)]
+                 [sprite-pattern-bits-lo (if flip-horizontal?
+                                             (flip-byte sprite-pattern-bits-lo)
+                                             sprite-pattern-bits-lo)]
+                 [sprite-pattern-bits-hi (if flip-horizontal?
+                                             (flip-byte sprite-pattern-bits-hi)
+                                             sprite-pattern-bits-hi)])
+            (set-sprite-shifter-lo! i sprite-pattern-bits-lo)
+            (set-sprite-shifter-hi! i sprite-pattern-bits-hi)))
+        })
+
+    (define-syntax-rule (calc-bg-pixel+palette)
+      {begin
+        (let* ([bit-mux (ufxrshift #x8000 fine-x)]
+               [p0-pixel (if (ufx= 0 (ufxand bg-shifter-pattern-lo bit-mux))
+                             0
+                             1)]
+               [p1-pixel (if (ufx= 0 (ufxand bg-shifter-pattern-hi bit-mux))
+                             0
+                             2)]
+               [bg-pal0 (if (ufx= 0 (ufxand bg-shifter-attrib-lo bit-mux))
+                            0
+                            1)]
+               [bg-pal1 (if (ufx= 0 (ufxand bg-shifter-attrib-hi bit-mux))
+                            0
+                            2)])
+          (values (ufxior p0-pixel p1-pixel)
+                  (ufxior bg-pal0 bg-pal1)))
+        })
+
+    (define-syntax-rule (calc-fg-pixel+palette+priority)
+      {begin
+        (set! sprite-zero-being-rendered? #f)
+        (let ([pixel : Fixnum 0]
+              [palette : Fixnum 0]
+              [priority? : Boolean #f])
+          (for/fixnum ([i #:from 0 #:until sprite-count])
+            (assert (ufx< i 8))
+            (define sprite (get-internal-sprite-info i))
+            (when (ufx= 0 (sprite-info-x sprite))
+              (let* ([pixel-lo (ufxrshift (ufxand #x80 (get-sprite-shifter-lo i)) 7)]
+                     [pixel-hi (ufxrshift (ufxand #x80 (get-sprite-shifter-hi i)) 6)]
+                     [attr (sprite-info-attribute sprite)])
+                (set! pixel (ufxior pixel-lo pixel-hi))
+                (set! palette (ufx+ 4 (ufxand 3 attr)))
+                (set! priority? (ufx= 0 (ufxand #x20 attr)))
+                (when (not (ufx= 0 pixel))
+                  (when (ufx= i 0)
+                    (set! sprite-zero-being-rendered? #t))
+                  (set! i 999) ; exit loop
+                  ))))
+          (values pixel palette priority?))
+        })
+
     (define-syntax-rule (clock)
       (begin
         (set! clock-result 0)
@@ -239,7 +467,10 @@
           (when (and (ufx= -1 scanline)
                      (ufx= 1 cycle))
             ; OLC: Effectively start of new frame, so clear vertical blank flag
-            (/vblank? ppustatus #:set! 0))
+            (/vblank? ppustatus #:set! 0)
+            (/sprite-overflow? ppustatus #:set! 0)
+            (/sprite-zero-hit? ppustatus #:set! 0)
+            (clear-sprite-shifters))
           (clock-main-loop)
           (when (ufx= cycle 256)
             ; OLC: End of a visible scanline, so increment downwards...
@@ -256,7 +487,12 @@
                      (ufx>= cycle 280)
                      (ufx< cycle 305))
             ; OLC: End of vertical blank period so reset the Y address ready for rendering
-            (transfer-address-y)))
+            (transfer-address-y))
+          (when (and (ufx= cycle 257)
+                     (ufx>= scanline 0))
+            (evaluate-sprites))
+          (when (ufx= cycle 340)
+            (prepare-sprite-shifters)))
 
         (when (and (ufx= 241 scanline)
                    (ufx= 1 cycle))
@@ -267,28 +503,45 @@
             #;(SET! nmi? #t)))
     
         ; Compose the pixel!
-        (let ([bg-pixel : Byte 0]
-              [bg-palette : Byte 0]
-              [pixel-index : Byte 0])
-          (when (has-any-flag? ppumask /render-bg?)
-            (let* ([bit-mux (ufxrshift #x8000 fine-x)]
-                   [p0-pixel (if (ufx= 0 (ufxand bg-shifter-pattern-lo bit-mux))
-                                 0
-                                 1)]
-                   [p1-pixel (if (ufx= 0 (ufxand bg-shifter-pattern-hi bit-mux))
-                                 0
-                                 2)]
-                   [bg-pal0 (if (ufx= 0 (ufxand bg-shifter-attrib-lo bit-mux))
-                                0
-                                1)]
-                   [bg-pal1 (if (ufx= 0 (ufxand bg-shifter-attrib-hi bit-mux))
-                                0
-                                2)])
-              (set! bg-pixel (ufxior p0-pixel p1-pixel))
-              (set! bg-palette (ufxior bg-pal0 bg-pal1))))
-          ; Be careful - this ppu-read (likely) needs to happen on every cycle:
-          (define addr (ufxior #x3F00 (ufxior bg-pixel (ufxlshift bg-palette 2))))
-          (set! pixel-index (ufxand mask-pixel-index (ppu-read addr)))
+        ; If foreground wins, can we avoid background computations?
+        ; NOPE because we need to do collision detection.
+        (define-values (pixel palette)
+          (let-values ([(fg-pixel fg-palette fg-priority?)
+                        (if (has-any-flag? ppumask /render-sprites?)
+                            (calc-fg-pixel+palette+priority)
+                            (values 0 0 #f))]
+                       [(bg-pixel bg-palette)
+                        (if (has-any-flag? ppumask /render-bg?)
+                            (calc-bg-pixel+palette)
+                            (values 0 0))])
+            (cond
+              [(and (ufx= 0 bg-pixel)
+                    (ufx= 0 fg-pixel))
+               (values 0 0)]
+              [(and (ufx= 0 bg-pixel)
+                    (ufx> fg-pixel 0))
+               (values fg-pixel fg-palette)]
+              [(and (ufx> bg-pixel 0)
+                    (ufx= 0 fg-pixel))
+               (values bg-pixel bg-palette)]
+              [else
+               (begin
+                 (when (and sprite-zero-hit-possible?
+                            sprite-zero-being-rendered?
+                            (has-any-flag? ppumask /render-bg?)
+                            (has-any-flag? ppumask /render-sprites?))
+                   (if (has-any-flag? ppumask /render-background-left? /render-sprites-left?)
+                       (when (and (ufx>= cycle 1) (ufx< cycle 258))
+                         (/sprite-zero-hit? ppustatus #:set! 1))
+                       (when (and (ufx>= cycle 9) (ufx< cycle 258))
+                         (/sprite-zero-hit? ppustatus #:set! 1))))
+                 (if fg-priority?
+                     (values fg-pixel fg-palette)
+                     (values bg-pixel bg-palette)))])))
+        ; Okay, now we have the "winning" pixel and palette
+        ; Be careful - this ppu-read (likely) needs to happen on every cycle:
+        (let* ([addr (ufxior #x3F00 (ufxior pixel (ufxlshift palette 2)))]
+               [pixel-index (ufxand mask-pixel-index (ppu-read addr))])
           ; stash pixel-index into clock-result
           (set! clock-result (ufxior clock-result pixel-index)))
 
@@ -348,11 +601,9 @@
           [(2) ; ppustatus is not writable
            (void)]
           [(3)
-           #;(error "TODO write OAM Address")
-           (void)]
+           (set! oam-addr in-value)]
           [(4)
-           #;(error "TODO write OAM Data")
-           (void)]
+           (dma-write oam-addr in-value)]
           [(5) ; PPUSCROLL
            (if (not address-latch?)
                (begin (SET! fine-x (ufxand 7 value))
@@ -396,6 +647,27 @@
            result)]
         [else
          0]))
+
+    (define-syntax-rule (dma-write addr data)
+      ; This is slightly awkward because DMA writes a single byte at a time.
+      ; OAM has 64 entries at 4 bytes per entry, so
+      ; * the highest 6 bits choose which of the 64 entries
+      ; * the lowest 2 bits choose which field of that entry
+      (let* ([index (ufxrshift (ufxand addr 255) 2)]
+             ; assert 0 <= index <= 63
+             [field (ufxand addr 3)]
+             ; assert 0 <= field <= 3
+             [sprite (get-sprite-info index)]
+             [val (ann data Byte)])
+        (case field
+          [(0) ; y id attribute x
+           (set-sprite-info-y! sprite val)]
+          [(1)
+           (set-sprite-info-id! sprite val)]
+          [(2)
+           (set-sprite-info-attribute! sprite val)]
+          [(3)
+           (set-sprite-info-x! sprite val)])))
     })
 
 (define-syntax-rule (define-ppu-compiler [#:compile-ppu compile-ppu #:state-type StateType]
@@ -419,7 +691,11 @@
       ;   mutable struct     : 1437 millis
       ; So for now I think the following approach (let-bound, nocheat) is the best I can do.
       (let ([var-id :: var-type var-init-val]
-            ...)
+            ...
+            ; WARNING - The following will need to be included in StateType and get-state
+            ; if we want to use those for savestate functionality...
+            [sprite-info-table (make-sprite-info-table)]
+            [sprite-shifters (make-bytes 16)])
         (define-syntax (wish stx)
           (syntax-case stx ()
             [(_ #:get foo)
@@ -430,10 +706,17 @@
              (equal? (syntax-e #'foo) 'var-id)
              (syntax/loc stx (set! var-id val))]
             ...
+            [(_ #:get-sprite-table)
+             (syntax/loc stx sprite-info-table)]
+            [(_ #:get-sprite-shifter i)
+             (syntax/loc stx (unsafe-bytes-ref sprite-shifters i))]
+            [(_ #:set-sprite-shifter i val)
+             (syntax/loc stx (unsafe-bytes-set! sprite-shifters i val))]
             [(_ stuff ooo)
              (syntax/loc stx (WISH stuff ooo))]))
         (define-ppu ooo wish #:clock clock-macro #:reset reset-macro
-          #:register-read register-read-macro #:register-write register-write-macro)
+          #:register-read register-read-macro #:register-write register-write-macro
+          #:dma-write dma-write-macro)
         (: clock (-> (Values Fixnum Fixnum Fixnum)))
         (define (clock) (clock-macro))
         (: reset (-> Void))
@@ -444,7 +727,9 @@
         (define (register-read addr) (register-read-macro addr))
         (: register-write (-> Fixnum Byte Void))
         (define (register-write addr value) (register-write-macro addr value))
-        (values clock reset get-state register-read register-write)))))
+        (: dma-write (-> Fixnum Byte Void))
+        (define (dma-write addr value) (dma-write-macro addr value))
+        (values clock reset get-state register-read register-write dma-write)))))
 
 (define-ppu-compiler [#:compile-ppu compile-ppu-raw #:state-type PPUState]
   [scanline : Fixnum 0] ; int16
@@ -458,6 +743,7 @@
   ;[nmi? : Boolean #f] ; boolean
   [clock-result : Fixnum 0]
   [address-latch? : Boolean #f] ; boolean
+  [oam-addr : Byte 0]
   ; Background rendering
   [bg-next-tile-lsb : Fixnum 0] ; uint8
   [bg-next-tile-msb : Fixnum 0] ; uint8
@@ -468,7 +754,12 @@
   [bg-shifter-attrib-lo : Fixnum 0] ; uint16
   [bg-shifter-attrib-hi : Fixnum 0] ; uint16
   [vram-addr : Fixnum 0] ; loopy, uint16
-  [tram-addr : Fixnum 0])
+  [tram-addr : Fixnum 0]
+  ; Foreground
+  [sprite-count : Fixnum 0]
+  [sprite-zero-hit-possible? : Boolean #f]
+  [sprite-zero-being-rendered? : Boolean #f]
+  )
 
 (define ppustate? (make-predicate PPUState))
 
@@ -492,6 +783,7 @@
                            ;(nmi? . #f)
                            (clock-result . 0)
                            (address-latch? . #f)
+                           (oam-addr . 0)
                            (bg-next-tile-lsb . 0)
                            (bg-next-tile-msb . 0)
                            (bg-next-tile-id . 0)
@@ -501,7 +793,10 @@
                            (bg-shifter-attrib-lo . 0)
                            (bg-shifter-attrib-hi . 0)
                            (vram-addr . 0)
-                           (tram-addr . 0)))))
+                           (tram-addr . 0)
+                           (sprite-count . 0)
+                           (sprite-zero-hit-possible? . #f)
+                           (sprite-zero-being-rendered? . #f)))))
 
 (module+ test
   (define-syntax (wish stx)
@@ -510,10 +805,8 @@
        #'(ann 0 Byte)]
       [(_ #:ppu-write addr val)
        #'(error "TODO ppu-write")]
-      [(_ #:compose-pixel bg-palette bg-pixel)
-       #'(void "TODO compose-pixel")]
       [else (raise-syntax-error #f "unrecognized wish" stx)]))
-  (define-values (clock reset get-state register-read register-write)
+  (define-values (clock reset get-state register-read register-write dma-write)
     (compile-ppu #:wish wish))
   (reset)
   ;(println (get-state))

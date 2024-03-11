@@ -36,7 +36,7 @@
   (provide clock reset)
   (require "ppu.rkt"
            (submod ".." shared))
-  (define-values (clock reset get-state register-read register-write)
+  (define-values (clock reset get-state register-read register-write dma-write)
     (compile-ppu #:wish wish)))
 
 (require (prefix-in dynamic: (submod 'dynamic-ppu))
@@ -51,7 +51,7 @@
             (static:clock))))
   (begin
     (println "Dynamic: 600 frames:")
-    (let-values ([(clock reset get-state register-read register-write)
+    (let-values ([(clock reset get-state register-read register-write dma-write)
                   (dynamic:create-ppu)])
       (reset)
       (time (for ([i (in-range (* 340 260 600))])

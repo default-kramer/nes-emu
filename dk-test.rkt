@@ -213,7 +213,8 @@
 (: ppu-get-state (-> ppu:PPUState))
 (: ppu-register-write (-> Fixnum Byte Void))
 (: ppu-register-read (-> Fixnum Byte))
-(define-values (ppu-clock ppu-reset ppu-get-state ppu-register-read ppu-register-write)
+(: ppu-dma-write (-> Fixnum Byte Void))
+(define-values (ppu-clock ppu-reset ppu-get-state ppu-register-read ppu-register-write ppu-dma-write)
   (let ()
     (define-syntax (wish stx)
       (syntax-case stx ()
@@ -227,6 +228,12 @@
 ; needs to contain ppu-register-write.
 
 (define cpu-ram (make-bytes #x800)) ; 2048 bytes
+
+(define dma-page : Fixnum 0) ; shifted immediately, so we can just ior with dma-addr each time
+(define dma-addr : Fixnum 0)
+(define dma-byte : Byte 0)
+(define dma-transfer? : Boolean #f)
+(define dma-delay? : Boolean #f)
 
 (define last-opcode-read : Fixnum -1) ; TEMP help log opcodes
 ;(define cpulog (open-output-file "my-cpulog.txt" #:exists 'replace))
@@ -279,6 +286,12 @@
                      "cpuwrite case 6.? "value"\n"))
        #;(println (list "GOT CPU WRITE TO PPU" addr cycle scanline system-clock))
        (ppu-register-write addr (ufxand 255 value)))]
+    [(ufx= addr #x4014)
+     (begin ; start DMA
+       (set! dma-page (ufxlshift (ufxand 255 value) 8))
+       (set! dma-addr 0)
+       (set! dma-transfer? #t)
+       (set! dma-delay? #t))]
     ; TODO also need controller stuff at $4016
     [else
      (void)]))
@@ -311,7 +324,12 @@
 (define (bus-reset)
   (set! cpu-cycles (adjust-cycles (cpu-reset)))
   (ppu-reset)
-  (set! system-clock 0))
+  (set! system-clock 0)
+  (set! dma-page 0)
+  (set! dma-addr 0)
+  (set! dma-byte 0)
+  (set! dma-delay? #t)
+  (set! dma-transfer? #f))
 
 (define-syntax-rule (compose-pixel2 x y index)
   (let ([x (ann x Fixnum)]
@@ -355,9 +373,23 @@
                 frame-count" "bg-hash"\n")))
 
   (when (ufx= 0 (ufxmodulo system-clock 3))
-    (when (ufx= 0 cpu-cycles)
-      (set! cpu-cycles (adjust-cycles (cpu-step))))
-    (set! cpu-cycles (ufx- cpu-cycles 1)))
+    (if dma-transfer?
+        (if dma-delay?
+            (when (ufx= 1 (ufxmodulo system-clock 2))
+              (set! dma-delay? #f))
+            (if (ufx= 0 (ufxmodulo system-clock 2))
+                ; on even clock cycles, read a byte
+                (set! dma-byte (cpu-read (ufxior dma-page dma-addr)))
+                (begin ; on odd clock cycles, write the byte PPU
+                  (ppu-dma-write dma-addr dma-byte)
+                  (set! dma-addr (ufx+ 1 dma-addr))
+                  (when (ufx= dma-addr 256)
+                    (set! dma-transfer? #f)
+                    (set! dma-delay? #t)))))
+        (begin ; no DMA
+          (when (ufx= 0 cpu-cycles)
+            (set! cpu-cycles (adjust-cycles (cpu-step))))
+          (set! cpu-cycles (ufx- cpu-cycles 1)))))
 
   (when nmi?
     (set! cpu-cycles (adjust-cycles (cpu-nmi))))
