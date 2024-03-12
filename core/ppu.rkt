@@ -339,13 +339,6 @@
 
     (define-syntax-rule (evaluate-sprites)
       {begin
-        (for ([i '(0 1 2 3 4 5 6 7)])
-          (let ([si (get-internal-sprite-info i)])
-            ; I think just setting Y is enough... pushes them offscreen I guess?
-            (set-sprite-info-y! si 255)
-            (set-sprite-info-id! si 255)
-            (set-sprite-info-attribute! si 255)
-            (set-sprite-info-x! si 255)))
         (set! sprite-count 0)
         (clear-sprite-shifters)
         (set! sprite-zero-hit-possible? #f)
@@ -372,7 +365,14 @@
                   (set! sprite-count (ufx+ 1 sprite-count)))
                 (loop (ufx+ 1 oam-index))))))
         (if (ufx<= sprite-count 8)
-            (/sprite-overflow? ppustatus #:set! 0)
+            (begin
+              (/sprite-overflow? ppustatus #:set! 0)
+              ; The unused internal entries need to be deactivated.
+              ; Wait, no... as long as we have an accurate sprite-count
+              ; who cares what is in the extraneous entries?
+              #;(for/fixnum ([i #:from sprite-count #:until 8])
+                  (let ([si (get-internal-sprite-info i)])
+                    (set-sprite-info-y! si 255))))
             (begin
               (/sprite-overflow? ppustatus #:set! 1)
               (set! sprite-count 8)))
