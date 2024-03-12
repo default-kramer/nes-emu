@@ -134,10 +134,10 @@
     (define-syntax-rule (get-internal-sprite-info index)
       ; The first 64 are OAM, followed by 8 internal
       (begin
-        (assert (and (ufx>= index 0)
-                     (ufx<= index 7)))
         (let ([i (ufxior 64 index)])
-          (unsafe-vector-ref (get-sprite-table) index))))
+          (assert (and (ufx>= i 64)
+                       (ufx< i 72)))
+          (unsafe-vector-ref (get-sprite-table) i))))
     (define-syntax-rule (get-sprite-shifter-lo i)
       (begin
         (assert (and (ufx>= i 0)
@@ -343,9 +343,9 @@
           (let ([si (get-internal-sprite-info i)])
             ; I think just setting Y is enough... pushes them offscreen I guess?
             (set-sprite-info-y! si 255)
-            (set-sprite-info-y! si 255)
-            (set-sprite-info-y! si 255)
-            (set-sprite-info-y! si 255)))
+            (set-sprite-info-id! si 255)
+            (set-sprite-info-attribute! si 255)
+            (set-sprite-info-x! si 255)))
         (set! sprite-count 0)
         (clear-sprite-shifters)
         (set! sprite-zero-hit-possible? #f)

@@ -19,6 +19,12 @@
 (: cart-bytes Bytes)
 (define cart-bytes
   (let* ([port (open-input-file "Donkey Kong (Japan).nes")]
+         #;[port (open-input-file "Bomberman (USA).nes")]
+         #;[port (open-input-file "Dig Dug (Japan).nes")] ; note: good 8x16 test case?
+         #;[port (open-input-file "Mario Bros. (Europe) (Rev A).nes")]
+         #;[port (open-input-file "Mario Bros. (World).nes")]
+         #;[port (open-input-file "Excitebike (Japan, USA).nes")]
+         #;[port (open-input-file "Galaga (Japan).nes")] ; another 8x16 test
          [bytes (read-bytes 16 port)] ; discard first 16 bytes (the header), I'll deal with this later
          [bytes (read-bytes #x6000 port)])
     (close-input-port port)
