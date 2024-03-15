@@ -232,21 +232,21 @@
 
     (define-syntax-rule (load-background-shifters)
       (begin
-        (SET! bg-shifter-pattern-lo (ufxior bg-next-tile-lsb
+        (set! bg-shifter-pattern-lo (ufxior bg-next-tile-lsb
                                             (ufxand #xFF00 bg-shifter-pattern-lo)))
-        (SET! bg-shifter-pattern-hi (ufxior bg-next-tile-msb
+        (set! bg-shifter-pattern-hi (ufxior bg-next-tile-msb
                                             (ufxand #xFF00 bg-shifter-pattern-hi)))
-        (SET! bg-shifter-attrib-lo (ufxior (ufxand #xFF00 bg-shifter-attrib-lo)
+        (set! bg-shifter-attrib-lo (ufxior (ufxand #xFF00 bg-shifter-attrib-lo)
                                            (if (ufx= 0 (ufxand 1 bg-next-tile-attrib))
                                                0
                                                #xFF)))
-        (SET! bg-shifter-attrib-hi (ufxior (ufxand #xFF00 bg-shifter-attrib-hi)
+        (set! bg-shifter-attrib-hi (ufxior (ufxand #xFF00 bg-shifter-attrib-hi)
                                            (if (ufx= 0 (ufxand 2 bg-next-tile-attrib))
                                                0
                                                #xFF)))))
 
     (define-syntax-rule (shift-left! id ooo)
-      (begin (SET! id (ufxand #xFFFF (ufxlshift id 1)))
+      (begin (set! id (ufxand #xFFFF (ufxlshift id 1)))
              ooo))
 
     (define-syntax-rule (update-shifters)
@@ -292,7 +292,7 @@
         (let* ([addr (ufxior #x2000
                              (ufxand #xFFF vram-addr))]
                [value (ppu-read addr)])
-          (SET! bg-next-tile-id value))))
+          (set! bg-next-tile-id value))))
 
     (define-syntax-rule (cycle2)
       (let* ([addr #x23C0]
@@ -303,12 +303,12 @@
                                            3))]
              [addr (ufxior addr (ufxrshift (/coarse-x vram-addr #:shifted) 2))]
              [val (ppu-read addr)])
-        (SET! bg-next-tile-attrib val)
+        (set! bg-next-tile-attrib val)
         (when (not (ufx= 0 (ufxand 2 (/coarse-y vram-addr #:shifted))))
-          (SET! bg-next-tile-attrib (ufxrshift bg-next-tile-attrib 4)))
+          (set! bg-next-tile-attrib (ufxrshift bg-next-tile-attrib 4)))
         (when (not (ufx= 0 (ufxand 2 (/coarse-x vram-addr #:shifted))))
-          (SET! bg-next-tile-attrib (ufxrshift bg-next-tile-attrib 2)))
-        (SET! bg-next-tile-attrib (ufxand 3 bg-next-tile-attrib))))
+          (set! bg-next-tile-attrib (ufxrshift bg-next-tile-attrib 2)))
+        (set! bg-next-tile-attrib (ufxand 3 bg-next-tile-attrib))))
 
     ; Cycles 4 and 6 are very similar, so they share this code
     (define-syntax-rule (cycle46 assignee zero-or-eight)
@@ -325,7 +325,7 @@
              ; And fine-offset is just a 4-bit number,
              ; so we can just fxior them all together
              [addr (ufxior bg-offset (ufxior tile-offset fine-offset))])
-        (SET! assignee (ppu-read addr))))
+        (set! assignee (ppu-read addr))))
 
     (define-syntax-rule (cycle4)
       (cycle46 bg-next-tile-lsb 0))
@@ -492,7 +492,7 @@
           (when (or (ufx= cycle 338)
                     (ufx= cycle 340))
             ; OLC: Superfluous reads of tile id at end of scanline
-            (SET! bg-next-tile-id (ppu-read (ufxior #x2000 (ufxand #xFFF vram-addr)))))
+            (set! bg-next-tile-id (ppu-read (ufxior #x2000 (ufxand #xFFF vram-addr)))))
           (when (and (ufx= scanline -1)
                      (ufx>= cycle 280)
                      (ufx< cycle 305))
@@ -561,29 +561,29 @@
         (values clock-result return-x return-y)))
 
     (define-syntax-rule (reset)
-      (begin (SET! fine-x 0)
-             (SET! ppu-data-buffer 0)
-             (SET! scanline 0)
-             (SET! cycle -1)
-             (SET! bg-next-tile-id 0)
-             (SET! bg-next-tile-attrib 0)
-             (SET! bg-next-tile-lsb 0)
-             (SET! bg-next-tile-msb 0)
-             (SET! bg-shifter-pattern-lo 0)
-             (SET! bg-shifter-pattern-hi 0)
-             (SET! bg-shifter-attrib-lo 0)
-             (SET! bg-shifter-attrib-hi 0)
-             (SET! ppustatus 0)
-             (SET! ppumask 0)
-             (SET! ppuctrl 0)
-             (SET! vram-addr 0)
-             (SET! tram-addr 0)))
+      (begin (set! fine-x 0)
+             (set! ppu-data-buffer 0)
+             (set! scanline 0)
+             (set! cycle -1)
+             (set! bg-next-tile-id 0)
+             (set! bg-next-tile-attrib 0)
+             (set! bg-next-tile-lsb 0)
+             (set! bg-next-tile-msb 0)
+             (set! bg-shifter-pattern-lo 0)
+             (set! bg-shifter-pattern-hi 0)
+             (set! bg-shifter-attrib-lo 0)
+             (set! bg-shifter-attrib-hi 0)
+             (set! ppustatus 0)
+             (set! ppumask 0)
+             (set! ppuctrl 0)
+             (set! vram-addr 0)
+             (set! tram-addr 0)))
 
     (define-syntax-rule (increment-vram-addr)
       (let ([increment (if (has-any-flag? ppuctrl /increment-mode?)
                            32
                            1)])
-        (SET! vram-addr (ufx+ increment vram-addr))))
+        (set! vram-addr (ufx+ increment vram-addr))))
 
 
     ; see olc2C02::cpuWrite
@@ -592,11 +592,11 @@
       (let ([value in-value])
         (case (ufxand 7 addr)
           [(0)
-           (SET! ppuctrl value)
+           (set! ppuctrl value)
            (/nametable-x tram-addr #:set! (/ntx? ppuctrl #:shifted))
            (/nametable-y tram-addr #:set! (/nty? ppuctrl #:shifted))]
           [(1)
-           (SET! ppumask value)]
+           (set! ppumask value)]
           [(2) ; ppustatus is not writable
            (void)]
           [(3)
@@ -605,21 +605,21 @@
            (dma-write oam-addr in-value)]
           [(5) ; PPUSCROLL
            (if (not address-latch?)
-               (begin (SET! fine-x (ufxand 7 value))
+               (begin (set! fine-x (ufxand 7 value))
                       (/coarse-x tram-addr #:set! (ufxrshift value 3))
-                      (SET! address-latch? #t))
+                      (set! address-latch? #t))
                (begin (/fine-y tram-addr #:set! (ufxand 7 value))
                       (/coarse-y tram-addr #:set! (ufxrshift value 3))
-                      (SET! address-latch? #f)))]
+                      (set! address-latch? #f)))]
           [(6)
            (if (not address-latch?)
-               (begin (SET! tram-addr (ufxior (ufxand #xFF tram-addr)
+               (begin (set! tram-addr (ufxior (ufxand #xFF tram-addr)
                                               (ufxlshift (ufxand #x3F value) 8)))
-                      (SET! address-latch? #t)
+                      (set! address-latch? #t)
                       #;(println (list "6.1" value vram-addr tram-addr)))
-               (begin (SET! tram-addr (ufxior value (ufxand #xFF00 tram-addr)))
-                      (SET! vram-addr tram-addr)
-                      (SET! address-latch? #f)
+               (begin (set! tram-addr (ufxior value (ufxand #xFF00 tram-addr)))
+                      (set! vram-addr tram-addr)
+                      (set! address-latch? #f)
                       #;(println (list "6.2" value vram-addr tram-addr))))]
           [(7)
            ; Note that ppu-write can depend on the mapper/cartridge
@@ -633,12 +633,12 @@
          (let ([result : Byte (ufxior (ufxand #xE0 ppustatus)
                                       (ufxand #x1F ppu-data-buffer))])
            (/vblank? ppustatus #:set! 0)
-           (SET! address-latch? #f)
+           (set! address-latch? #f)
            result)]
         [(7)
          ; OLC: Reads from the NameTable ram get delayed one cycle
          (let ([result : Byte ppu-data-buffer])
-           (SET! ppu-data-buffer (ppu-read vram-addr))
+           (set! ppu-data-buffer (ppu-read vram-addr))
            ; OLC: However, if the address was in the palette range, the data is not delayed, so it returns immediately
            (when (ufx>= vram-addr #x3F00)
              (set! result ppu-data-buffer))

@@ -1,7 +1,7 @@
 #lang typed/racket
 
 (provide define-stxparams
-         SET!
+         set!
          parameterize-syntax-ids
          define-maskers
          has-any-flag?
@@ -18,8 +18,6 @@
       (lambda (stx)
         (raise-syntax-error 'id msg)))
     ...))
-
-(define-syntax-rule (SET! id val) (set! id val))
 
 (define-syntax (parameterize-syntax-ids stx)
   (syntax-case stx ()
@@ -62,7 +60,7 @@
              [(_ backing #:shifted)
               #'(ufxrshift (ufxand #,mask backing) #,shift-count)]
              [(_ backing #:set! val)
-              #'(SET! backing (ufxior (ufxand backing #,antimask)
+              #'(set! backing (ufxior (ufxand backing #,antimask)
                                       (ufxand #,mask (ufxlshift val #,shift-count))))]
              #;[(_ backing #:with val)
                 #'(ufxior (ufxand backing #,antimask)
@@ -84,7 +82,7 @@
          [temp (ufxand dst (ufxnot mask))]
          ; copy bits
          [temp (ufxior temp (ufxand src mask))])
-    (SET! dst temp)))
+    (set! dst temp)))
 
 (module+ test
   (require typed/rackunit)
@@ -92,17 +90,17 @@
   (define-masker /bit1 #b010)
   (let ([A : Fixnum 0]
         [B : Fixnum 0])
-    (SET! A #b1111)
+    (set! A #b1111)
     (copy-bits #:from A #:to B /bit2 /bit1)
     (check-equal? B #b0110)
-    (SET! A 0)
+    (set! A 0)
     (copy-bits #:from A #:to B /bit2 /bit1)
     (check-equal? B #b0000)
-    (SET! A #b1111)
-    (SET! B #b1000)
+    (set! A #b1111)
+    (set! B #b1000)
     (copy-bits #:from A #:to B /bit1)
     (check-equal? B #b1010)
-    (SET! A 0)
+    (set! A 0)
     (copy-bits #:from A #:to B /bit1)
     (check-equal? B #b1000)
     ))
