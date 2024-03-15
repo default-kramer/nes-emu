@@ -78,33 +78,35 @@
 
 (: ppu-read (-> Fixnum Fixnum Byte))
 (define (ppu-read addr ppumask)
-  (let ([addr (ufxand #x3FFF addr)])
-    (cond
-      [(ufx< addr #x2000)
-       (let ([result
-              ; Mapper 0 specific! Read from vCHRMemory (cartridge $4000 - $5FFF)
-              (unsafe-bytes-ref cart-bytes (ufx+ #x4000 (ufxand #x1FFF addr)))])
-         #;(when (ufx= 439187 system-clock)
-             (println (list "ppu-read" addr result ppuctrl bg-next-tile-id vram-addr)))
-         result)]
-      [(ufx< addr #x2000)
-       ; I assume this is used when the mapper doesn't intercept this range?
-       (unsafe-bytes-ref tbl-pattern (ufxand #x1FFF addr))]
-      [(ufx< addr #x3F00)
-       (let* ([index (nametable-index addr)]
-              [result (unsafe-bytes-ref tbl-name index)])
-         #;(when (ufx= 439119 system-clock)
-             (println (list "ppu-read" addr result index)))
-         result)]
-      [(ufx< addr #x4000)
-       (let* ([index (palette-table-index addr)]
-              [raw (unsafe-bytes-ref tbl-palette index)]
-              ; lowest bit is grayscale flag
-              [mask (if (ufx= 0 (ufxand 1 ppumask))
-                        #x3F
-                        #x30)])
-         (ufxand raw mask))]
-      [else 0])))
+  (define result
+    (let ([addr (ufxand #x3FFF addr)])
+      (cond
+        [(ufx< addr #x2000)
+         (let ([result
+                ; Mapper 0 specific! Read from vCHRMemory (cartridge $4000 - $5FFF)
+                (unsafe-bytes-ref cart-bytes (ufx+ #x4000 (ufxand #x1FFF addr)))])
+           #;(when (ufx= 439187 system-clock)
+               (println (list "ppu-read" addr result ppuctrl bg-next-tile-id vram-addr)))
+           result)]
+        [(ufx< addr #x2000)
+         ; I assume this is used when the mapper doesn't intercept this range?
+         (unsafe-bytes-ref tbl-pattern (ufxand #x1FFF addr))]
+        [(ufx< addr #x3F00)
+         (let* ([index (nametable-index addr)]
+                [result (unsafe-bytes-ref tbl-name index)])
+           #;(when (ufx= 439119 system-clock)
+               (println (list "ppu-read" addr result index)))
+           result)]
+        [(ufx< addr #x4000)
+         (let* ([index (palette-table-index addr)]
+                [raw (unsafe-bytes-ref tbl-palette index)]
+                ; lowest bit is grayscale flag
+                [mask (if (ufx= 0 (ufxand 1 ppumask))
+                          #x3F
+                          #x30)])
+           (ufxand raw mask))]
+        [else 0])))
+  result)
 
 ; see olc2C02::ppuWrite
 (: ppu-write (-> Fixnum Fixnum Void))
@@ -270,12 +272,6 @@
        ; Read from vPRGMemory (cartridge $0000 - $3FFF)
        (unsafe-bytes-ref cart-bytes (ufxand #x3FFF addr))]
       [else 0]))
-  #;(when (and (ufx= cpu-cycles 0)
-               (ufx= addr PC)
-               (not (ufx= system-clock last-opcode-read)))
-      (set! last-opcode-read system-clock)
-      #;(display* #:port cpulog
-                  system-clock" "PC" "result" "A" "X" "Y" "SP"\n"))
   result)
 
 ; see Bus::cpuWrite
@@ -284,13 +280,10 @@
   (cond
     [(ufx< addr #x2000)
      ; OLC: System RAM Address Range
-     (unsafe-bytes-set! cpu-ram (ufxand #x7FF addr) value)]
+     (begin
+       (unsafe-bytes-set! cpu-ram (ufxand #x7FF addr) value))]
     [(ufx< addr #x4000)
      (begin
-       #;(when (ufx= 6 (ufxand 7 addr))
-           (display* #:port ppulog
-                     "cpuwrite case 6.? "value"\n"))
-       #;(println (list "GOT CPU WRITE TO PPU" addr cycle scanline system-clock))
        (ppu-register-write addr (ufxand 255 value)))]
     [(ufx= addr #x4014)
      (begin ; start DMA
@@ -350,7 +343,7 @@
     (set! current-pixel-x x)
     (set! current-pixel-y y)))
 
-(define (bus-clock [ppulog : (U #f Output-Port) #f])
+(define (bus-clock [ppulog : (U #f Output-Port) #f] [cpulog : (U #f Output-Port) #f])
   (define-syntax-rule (has-bit? bit val)
     (ufx= bit (ufxand bit val)))
   (define-values (ppu-clock-result pixel-x pixel-y)
@@ -358,6 +351,11 @@
 
   ; WARNING should be using constants for these masks:
   (set! frame-complete? (has-bit? #x80 ppu-clock-result))
+  (when frame-complete?
+    (set! frame-count (ufx+ 1 frame-count)))
+  (when (and ppulog frame-complete?)
+    (display* #:port ppulog
+              frame-count" "bg-hash"\n"))
   (define nmi? (has-bit? #x40 ppu-clock-result))
   (define pixel-index (ufxand #x3F ppu-clock-result))
   (compose-pixel2 pixel-x pixel-y pixel-index)
@@ -372,11 +370,6 @@
                 " "bg-next-tile-msb" "bg-next-tile-lsb" "bg-next-tile-id"\n"))
   #;(when ppulog
       (display* #:port ppulog pixel-x","pixel-y" = "pixel-index"\n"))
-  (when frame-complete?
-    (set! frame-count (ufx+ 1 frame-count))
-    (when ppulog
-      (display* #:port ppulog
-                frame-count" "bg-hash"\n")))
 
   (when (ufx= 0 (ufxmodulo system-clock 3))
     (if dma-transfer?
@@ -410,15 +403,15 @@
 
 (module+ test
   (let ()
-    (define actual-path "./test-logs/dk-test.actual.bghash.txt")
-    (define expected-path "./test-logs/dk-test.expected.bghash.txt")
+    (define actual-path "./test-logs/dk-test.actual.pixelhash.log")
+    (define expected-path "./test-logs/dk-test.expected.pixelhash.log")
     (bus-reset)
     (let ([ppulog (open-output-file actual-path #:exists 'replace)])
       (with-handlers ([exn? (lambda (e)
                               (println (list "FATAL ERROR" e)))])
         (let loop ()
           (bus-clock ppulog)
-          (when (< frame-count 2370)
+          (when (< frame-count 2628)
             (loop))))
       (close-output-port ppulog))
     (let* ([expected (port->string (open-input-file expected-path))]

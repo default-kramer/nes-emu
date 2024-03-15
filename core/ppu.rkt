@@ -1,6 +1,6 @@
 #lang typed/racket
 
-(provide PPUState ppustate? compile-ppu)
+(provide PPUState (struct-out ppustate) compile-ppu)
 (module+ internals
   (provide define-ppu))
 
@@ -289,9 +289,10 @@
     (define-syntax-rule (cycle0)
       (begin
         (load-background-shifters)
-        (let ([addr (ufxior #x2000
-                            (ufxand #xFFF vram-addr))])
-          (SET! bg-next-tile-id (ppu-read addr)))))
+        (let* ([addr (ufxior #x2000
+                             (ufxand #xFFF vram-addr))]
+               [value (ppu-read addr)])
+          (SET! bg-next-tile-id value))))
 
     (define-syntax-rule (cycle2)
       (let* ([addr #x23C0]
@@ -458,6 +459,15 @@
       (begin
         (set! clock-result 0)
 
+        ; Advance renderer
+        (set! cycle (ufx+ 1 cycle))
+        (when (ufx>= cycle 341)
+          (set! cycle 0)
+          (set! scanline (ufx+ 1 scanline))
+          (when (ufx>= scanline 261)
+            (set! scanline -1)
+            (set! clock-result (ufxior mask-frame-complete? clock-result))))
+
         (when (and (ufx>= scanline -1)
                    (ufx< scanline 240))
           (when (and (ufx= 0 scanline)
@@ -499,8 +509,7 @@
           ; End of frame
           (/vblank? ppustatus #:set! 1)
           (when (has-any-flag? ppuctrl /enable-nmi?)
-            (set! clock-result (ufxior mask-nmi? clock-result))
-            #;(SET! nmi? #t)))
+            (set! clock-result (ufxior mask-nmi? clock-result))))
     
         ; Compose the pixel!
         ; If foreground wins, can we avoid background computations?
@@ -548,16 +557,6 @@
         (define return-x (ufx+ cycle -1))
         (define return-y scanline)
 
-        ; Advance renderer
-        (set! cycle (ufx+ 1 cycle))
-        (when (ufx>= cycle 341)
-          (set! cycle 0)
-          (set! scanline (ufx+ 1 scanline))
-          (when (ufx>= scanline 261)
-            (set! scanline -1)
-            (set! clock-result (ufxior mask-frame-complete? clock-result))
-            #;(set! frame-complete? #t)))
-
         ; Return
         (values clock-result return-x return-y)))
 
@@ -565,7 +564,7 @@
       (begin (SET! fine-x 0)
              (SET! ppu-data-buffer 0)
              (SET! scanline 0)
-             (SET! cycle 0)
+             (SET! cycle -1)
              (SET! bg-next-tile-id 0)
              (SET! bg-next-tile-attrib 0)
              (SET! bg-next-tile-lsb 0)
@@ -594,8 +593,8 @@
         (case (ufxand 7 addr)
           [(0)
            (SET! ppuctrl value)
-           (/ntx? ppuctrl #:set! (/nametable-x tram-addr #:shifted))
-           (/nty? ppuctrl #:set! (/nametable-y tram-addr #:shifted))]
+           (/nametable-x tram-addr #:set! (/ntx? ppuctrl #:shifted))
+           (/nametable-y tram-addr #:set! (/nty? ppuctrl #:shifted))]
           [(1)
            (SET! ppumask value)]
           [(2) ; ppustatus is not writable
@@ -670,10 +669,12 @@
            (set-sprite-info-x! sprite val)])))
     })
 
-(define-syntax-rule (define-ppu-compiler [#:compile-ppu compile-ppu #:state-type StateType]
+(define-syntax-rule (define-ppu-compiler [#:compile-ppu compile-ppu #:state-struct state-struct #:state-type StateType]
                       [var-id :: var-type var-init-val] ...)
   (begin
-    (define-type StateType (List (Pair 'var-id var-type) ...))
+    (struct state-struct ([var-id :: var-type] ...)
+      #:transparent #:type-name StateType)
+    #;(define-type StateType (List (Pair 'var-id var-type) ...))
     (define-syntax-rule (compile-ppu #:ooo ooo #:wish WISH)
       ; PERFORMANCE NOTE! The approach that follows returns clock/reset procedures
       ; which close over the let-bound state variables.
@@ -722,7 +723,7 @@
         (: reset (-> Void))
         (define (reset) (reset-macro))
         (: get-state (-> StateType))
-        (define (get-state) (list (cons 'var-id var-id) ...))
+        (define (get-state) (state-struct var-id ...))
         (: register-read (-> Fixnum Byte))
         (define (register-read addr) (register-read-macro addr))
         (: register-write (-> Fixnum Byte Void))
@@ -731,9 +732,9 @@
         (define (dma-write addr value) (dma-write-macro addr value))
         (values clock reset get-state register-read register-write dma-write)))))
 
-(define-ppu-compiler [#:compile-ppu compile-ppu-raw #:state-type PPUState]
+(define-ppu-compiler [#:compile-ppu compile-ppu-raw #:state-struct ppustate #:state-type PPUState]
   [scanline : Fixnum 0] ; int16
-  [cycle : Fixnum 0] ; int16
+  [cycle : Fixnum -1] ; int16
   [ppumask : Fixnum 0] ; 8 bits of flags
   [ppuctrl : Fixnum 0] ; 8 bits of flags
   [ppustatus : Fixnum 0] ; 3 bits of flags (and 5 unused bits)
@@ -761,42 +762,12 @@
   [sprite-zero-being-rendered? : Boolean #f]
   )
 
-(define ppustate? (make-predicate PPUState))
-
 (define-syntax (compile-ppu stx)
   (syntax-case stx ()
     [(_ stuff ...)
      (with-syntax ([ooo (quote-syntax ...)])
        (syntax/loc stx
          (compile-ppu-raw #:ooo ooo stuff ...)))]))
-
-(module+ test
-  ; Alert if I accidentally change the type definition of PPUState:
-  (check-true (ppustate? '((scanline . 0)
-                           (cycle . 0)
-                           (ppumask . 0)
-                           (ppuctrl . 0)
-                           (ppustatus . 0)
-                           (fine-x . 0)
-                           (ppu-data-buffer . 0)
-                           ;(frame-complete? . #f)
-                           ;(nmi? . #f)
-                           (clock-result . 0)
-                           (address-latch? . #f)
-                           (oam-addr . 0)
-                           (bg-next-tile-lsb . 0)
-                           (bg-next-tile-msb . 0)
-                           (bg-next-tile-id . 0)
-                           (bg-next-tile-attrib . 0)
-                           (bg-shifter-pattern-lo . 0)
-                           (bg-shifter-pattern-hi . 0)
-                           (bg-shifter-attrib-lo . 0)
-                           (bg-shifter-attrib-hi . 0)
-                           (vram-addr . 0)
-                           (tram-addr . 0)
-                           (sprite-count . 0)
-                           (sprite-zero-hit-possible? . #f)
-                           (sprite-zero-being-rendered? . #f)))))
 
 (module+ test
   (define-syntax (wish stx)
