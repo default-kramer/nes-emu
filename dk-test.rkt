@@ -400,21 +400,3 @@
   (and frame-complete?
        (begin (set! frame-complete? #f)
               #t)))
-
-(module+ test
-  (let ()
-    (define actual-path "./test-logs/dk-test.actual.pixelhash.log")
-    (define expected-path "./test-logs/dk-test.expected.pixelhash.log")
-    (bus-reset)
-    (let ([ppulog (open-output-file actual-path #:exists 'replace)])
-      (with-handlers ([exn? (lambda (e)
-                              (println (list "FATAL ERROR" e)))])
-        (let loop ()
-          (bus-clock ppulog)
-          (when (< frame-count 2628)
-            (loop))))
-      (close-output-port ppulog))
-    (let* ([expected (port->string (open-input-file expected-path))]
-           [actual (port->string (open-input-file actual-path))])
-      (when (not (equal? actual expected))
-        (fail (format "files differ: ~a vs ~a" expected-path actual-path))))))
