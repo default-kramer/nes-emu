@@ -6,7 +6,7 @@
          current-pixel-x
          current-pixel-y)
 
-(require (prefix-in cpu: "cpu.rkt")
+(require (prefix-in cpu: "core/cpu.rkt")
          (prefix-in ppu: "core/ppu.rkt")
          "ufx.rkt"
          "util.rkt"
