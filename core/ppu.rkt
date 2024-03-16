@@ -404,7 +404,7 @@
                                         4)]
                        [row (ufxand 7 row)])
                   (if flip-vertical?
-                      (ufxior* pattern cell row (ufx- 7 row))
+                      (ufxior* pattern cell (ufx- 7 row))
                       (ufxior* pattern cell row)))))
           ; OLC: Hi bit plane equivalent is always offset by 8 bytes from lo bit plane
           (define sprite-pattern-addr-hi (ufx+ 8 sprite-pattern-addr-lo))
