@@ -259,19 +259,17 @@
         (when (and (ufx>= cycle 1)
                    (ufx< cycle 258)
                    (has-any-flag? ppumask /render-sprites?))
-          (let ([sprite-table (get-sprite-table)])
-            (let loop ([i : Fixnum sprite-count])
-              (let* ([internal-sprite (get-internal-sprite-info i)]
-                     [sprite-x : Byte (sprite-info-x internal-sprite)])
-                (if (ufx> sprite-x 0)
-                    (let ([sprite-x : Byte (ufx- sprite-x 1)])
-                      (set-sprite-info-x! internal-sprite sprite-x))
-                    (let ([lo (get-sprite-shifter-lo i)]
-                          [hi (get-sprite-shifter-hi i)])
-                      (set-sprite-shifter-lo! i (ufxand 255 (ufxlshift lo 1)))
-                      (set-sprite-shifter-hi! i (ufxand 255 (ufxlshift hi 1))))))
-              (when (not (ufx= 0 i))
-                (loop (ufx+ -1 i))))))))
+          (for/fixnum ([i #:from 0 #:until sprite-count])
+            (assert (ufx< i 8))
+            (let* ([internal-sprite (get-internal-sprite-info i)]
+                   [sprite-x : Byte (sprite-info-x internal-sprite)])
+              (if (ufx> sprite-x 0)
+                  (let ([sprite-x : Byte (ufx- sprite-x 1)])
+                    (set-sprite-info-x! internal-sprite sprite-x))
+                  (let ([lo (get-sprite-shifter-lo i)]
+                        [hi (get-sprite-shifter-hi i)])
+                    (set-sprite-shifter-lo! i (ufxand 255 (ufxlshift lo 1)))
+                    (set-sprite-shifter-hi! i (ufxand 255 (ufxlshift hi 1))))))))))
 
     (define-syntax-rule (clock-main-loop)
       (when (or (and (ufx>= cycle 2)
@@ -385,21 +383,31 @@
         (for/fixnum ([i #:from 0 #:until sprite-count])
           (assert (ufx< i 8))
           (define sprite (get-internal-sprite-info i))
-          (define flip-vertical? (ufx= #x80 (ufxand #x80 (sprite-info-attribute sprite))))
-          (define flip-horizontal? (ufx= #x40 (ufxand #x40 (sprite-info-attribute sprite))))
+          (define sprite-id (sprite-info-id sprite))
+          (define sprite-y (sprite-info-y sprite))
+          (define sprite-attr (sprite-info-attribute sprite))
+          (define flip-horizontal? (ufx= #x40 (ufxand #x40 sprite-attr)))
+          (define flip-vertical? (ufx= #x80 (ufxand #x80 sprite-attr)))
           (define sprite-pattern-addr-lo : Fixnum
             (if is-8x8?
                 (let ([base (ufxior (ufxlshift (/pattern-sprite? ppuctrl #:shifted) 12)
-                                    (ufxlshift (sprite-info-id sprite) 4))]
-                      [row (ufx- scanline (sprite-info-y sprite))])
+                                    (ufxlshift sprite-id 4))]
+                      [row (ufx- scanline sprite-y)])
                   (if flip-vertical?
                       (ufxior base (ufx- 7 row))
                       (ufxior base row)))
                 ; else we are in 8x16 mode:
-                (error "TODO 8x16 here")))
+                (let* ([pattern (ufxlshift (ufxand 1 sprite-id) 12)]
+                       [row (ufx- scanline sprite-y)]
+                       [cell (ufxlshift (ufxior (if (ufx< row 8) 0 1)
+                                                (ufxand #xFE sprite-id))
+                                        4)]
+                       [row (ufxand 7 row)])
+                  (if flip-vertical?
+                      (ufxior* pattern cell row (ufx- 7 row))
+                      (ufxior* pattern cell row)))))
           ; OLC: Hi bit plane equivalent is always offset by 8 bytes from lo bit plane
           (define sprite-pattern-addr-hi (ufx+ 8 sprite-pattern-addr-lo))
-
           (let* ([sprite-pattern-bits-lo : Byte (ppu-read sprite-pattern-addr-lo)]
                  [sprite-pattern-bits-hi : Byte (ppu-read sprite-pattern-addr-hi)]
                  [sprite-pattern-bits-lo (if flip-horizontal?
