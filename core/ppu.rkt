@@ -399,9 +399,11 @@
                 ; else we are in 8x16 mode:
                 (let* ([pattern (ufxlshift (ufxand 1 sprite-id) 12)]
                        [row (ufx- scanline sprite-y)]
-                       [cell (ufxlshift (ufxior (if (ufx< row 8) 0 1)
-                                                (ufxand #xFE sprite-id))
-                                        4)]
+                       [top-half? (ufx< row 8)]
+                       [adder (if flip-vertical?
+                                  (if top-half? 1 0)
+                                  (if top-half? 0 1))]
+                       [cell (ufxlshift (ufxior adder (ufxand #xFE sprite-id)) 4)]
                        [row (ufxand 7 row)])
                   (if flip-vertical?
                       (ufxior* pattern cell (ufx- 7 row))
