@@ -20,8 +20,8 @@
 
   ; Unvetted against another implementation:
   (test "Bomberman (USA).nes" 2500)
-  ; 8x16 (test "Dig Dug (Japan).nes" 0)
+  (test "Dig Dug (Japan).nes" 2500)
   (test "Mario Bros. (Europe) (Rev A).nes" 2500)
   (test "Mario Bros. (World).nes" 2500)
-  ; 8x16 (test "Galaga (Japan).nes" 0)
+  (test "Galaga (Japan).nes" 2500)
   }
