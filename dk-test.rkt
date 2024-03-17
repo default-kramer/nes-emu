@@ -92,8 +92,11 @@
   (set! current-pixel-x x)
   (set! current-pixel-y y))
 
-(define emu (make-emulator "./roms/nes-roms/Donkey Kong (Japan).nes"
-                           pixel-callback))
+(define emu (make-emulator
+             "./roms/nes-roms/Donkey Kong (Japan).nes"
+             ;"./roms/nes-roms/Bomberman (USA).nes"
+             ;"./roms/nes-roms/Mario Bros. (World).nes"
+             pixel-callback))
 
 (: bus-reset (-> Void))
 (define bus-reset (emulator-reset emu))

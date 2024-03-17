@@ -107,7 +107,7 @@
   (: nametable-index (-> Fixnum Fixnum))
   (define nametable-index
     (case (rom-info-mirror rom-info)
-      [(horizontal vertical)
+      [(horizontal)
        (lambda ([addr : Fixnum])
          ; 000-3FF => 000-3FF
          ; 400-7FF => 000-3FF
@@ -116,13 +116,13 @@
          (let ([second-table? (ufxand #x800 addr)])
            (ufxior (ufxand #x3FF addr)
                    (ufxrshift second-table? 1))))]
-      #;[(vertical)
-         (lambda ([addr : Fixnum])
-           ; 000-3FF => 000-3FF
-           ; 400-7FF => 400-7FF
-           ; 800-BFF => 000-3FF
-           ; C00-FFF => 400-7FF
-           (ufxand #x7FF addr))]))
+      [(vertical)
+       (lambda ([addr : Fixnum])
+         ; 000-3FF => 000-3FF
+         ; 400-7FF => 400-7FF
+         ; 800-BFF => 000-3FF
+         ; C00-FFF => 400-7FF
+         (ufxand #x7FF addr))]))
 
   (: palette-table-index (-> Fixnum Fixnum))
   (define (palette-table-index addr)
