@@ -1,7 +1,6 @@
 #lang racket/gui
 
-(require "dk-test.rkt"
-         pict)
+(require pict)
 
 (module WTF racket
   (provide start-worker W H)
@@ -28,7 +27,7 @@
 
         (: do-one-frame (-> Bytes Void))
         (define (do-one-frame buffer)
-          (bus-clock)
+          (define frame-complete? (bus-clock))
           (let ([pixel-index : Fixnum
                              (ufx* 4 (ufx+ (ufx* current-pixel-y W)
                                            current-pixel-x))])
@@ -44,7 +43,7 @@
                 (unsafe-bytes-set! buffer pixel-index g)
                 (set! pixel-index (ufx+ 1 pixel-index))
                 (unsafe-bytes-set! buffer pixel-index b))))
-          (if (TODO)
+          (if frame-complete?
               (void)
               (do-one-frame buffer)))
 

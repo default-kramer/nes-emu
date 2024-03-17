@@ -19,9 +19,9 @@
   (test "Donkey Kong (Japan).nes" 2628)
 
   ; Unvetted against another implementation:
-  (test "Bomberman (USA).nes" 2500)
-  (test "Dig Dug (Japan).nes" 2500)
-  (test "Mario Bros. (Europe) (Rev A).nes" 2500)
-  (test "Mario Bros. (World).nes" 2500)
-  (test "Galaga (Japan).nes" 2500)
+  (test "Bomberman (USA).nes" 2500) ; Mapper 0, Vertical
+  (test "Dig Dug (Japan).nes" 2500) ; Mapper 0, Horizontal
+  (test "Mario Bros. (Europe) (Rev A).nes" 2500) ; Mapper 0, Horizontal
+  (test "Mario Bros. (World).nes" 2500) ; Mapper 0, Vertical
+  (test "Galaga (Japan).nes" 2500) ; Mapper 3 according to header, but is this true?
   }

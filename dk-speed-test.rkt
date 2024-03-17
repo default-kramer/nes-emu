@@ -10,10 +10,8 @@
 
   (: do-one-frame (-> Void))
   (define (do-one-frame)
-    (let loop ()
-      (bus-clock)
-      (when (not (TODO))
-        (loop))))
+    (when (not (bus-clock))
+      (do-one-frame)))
 
   (for ([i (in-range 10)])
     (do-one-frame))
