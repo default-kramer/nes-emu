@@ -54,39 +54,51 @@
                         )])
        (rom-info prg-rom-size chr-rom-size mapper mirror))]))
 
-(define zero-bytes (make-bytes 0))
-
 ; x y index -> Any
 (define-type Pixel-Callback (-> Fixnum Fixnum Fixnum Any))
 
-(: make-emulator (-> Path-String Pixel-Callback Emulator))
-(define (make-emulator rom-path pixel-callback)
+(define-type Make-Emulator (-> Path-String Pixel-Callback Emulator))
 
-  (: cart-bytes Bytes)
-  (define-values (rom-info-or-error cart-bytes)
-    (let ()
-      (define (go [port : Input-Port])
-        (let ([header (read-bytes 16 port)])
-          (if (eof-object? header)
-              (values "File lacks iNES header (too small)" zero-bytes)
-              (let ([rom-info (get-rom-info header)])
-                (if (string? rom-info)
-                    (values rom-info zero-bytes)
-                    (values rom-info (port->bytes port)))))))
-      (let*-values ([(port) (open-input-file rom-path)]
-                    [(a b) (go port)])
-        (close-input-port port)
-        (values a b))))
+(: make-emulator2 Make-Emulator)
+(define (make-emulator2 rom-path pixel-callback)
+
+  ; assuming custodian will take care of cleaning up this port:
+  (define port (open-input-file rom-path))
+  (define header (read-bytes 16 port))
+  (when (eof-object? header)
+    (error "File lacks iNES header (too small)"))
 
   (: rom-info ROM-Info)
-  (define rom-info (if (string? rom-info-or-error)
-                       (error (format "~a (~a)" rom-info-or-error rom-path))
-                       rom-info-or-error))
+  (define rom-info
+    (let ([rom-info (get-rom-info header)])
+      (if (string? rom-info)
+          (error rom-info)
+          rom-info)))
 
-  ; TODO not sure about mapper 3... The same mapper0 code seems to
-  ; work for Galaga but maybe that ROM's header is lying?
-  (when (not (member (rom-info-mapper rom-info) '(0 3)))
-    (error "Unsupported mapper:" (rom-info-mapper rom-info)))
+  (define mapper : Byte (rom-info-mapper rom-info))
+
+  (define (load-bytes [size : Integer] [validate-size : (U #f (Listof Integer)) #f])
+    (let ([bytes (read-bytes size port)])
+      (cond
+        [(or (eof-object? bytes)
+             (not (= size (bytes-length bytes))))
+         (error "File size smaller than header declared")]
+        [(and validate-size
+              (not (member size validate-size)))
+         (error "Invalid size ~a (expected ~a)" size validate-size)]
+        [else bytes])))
+
+  (: bytes-PRG Bytes)
+  (: bytes-CHR Bytes)
+  (define-values (bytes-PRG bytes-CHR)
+    (case mapper
+      ; TODO not sure about mapper 3... The same mapper0 code seems to
+      ; work for Galaga but maybe that ROM's header is lying?
+      [(0 3)
+       (values (load-bytes (rom-info-prg-rom-size rom-info) '(#x4000 #x8000))
+               ; TODO what sizes should CHR be validated against?
+               (load-bytes (rom-info-chr-rom-size rom-info)))]
+      [else (error "Unsupported mapper:" mapper)]))
 
   (define-syntax-rule (define-multi [a ...] ...)
     (begin (define a ...)
@@ -141,8 +153,8 @@
         (cond
           [(ufx< addr #x2000)
            (let ([result
-                  ; Mapper 0 specific! Read from vCHRMemory (cartridge $4000 - $5FFF)
-                  (unsafe-bytes-ref cart-bytes (ufx+ #x4000 (ufxand #x1FFF addr)))])
+                  ; May be Mapper 0 specific???
+                  (unsafe-bytes-ref bytes-CHR (ufxand #x1FFF addr))])
              #;(when (ufx= 439187 system-clock)
                  (println (list "ppu-read" addr result ppuctrl bg-next-tile-id vram-addr)))
              result)]
@@ -215,23 +227,29 @@
     (begin (display item port)
            ...))
 
-  (: cpu-read (-> Fixnum Byte))
-  (define (cpu-read addr)
-    (cond
-      [(ufx< addr #x2000)
-       ; OLC: System RAM Address Range, mirrored every 2048
-       (let ([result (unsafe-bytes-ref cpu-ram (ufxand #x7FF addr))])
-         result)]
-      [(ufx< addr #x4000)
-       (let ([result (ppu-register-read addr)])
-         result)]
-      ; TODO also need controller stuff at $4016
-      [(and (ufx>= addr #x8000)
-            (ufx<= addr #xFFFF))
-       ; Mapper 0 specific! And assumes nPRGBanks is 1
-       ; Read from vPRGMemory (cartridge $0000 - $3FFF)
-       (unsafe-bytes-ref cart-bytes (ufxand #x3FFF addr))]
-      [else 0]))
+  (define cpu-read
+    ; MAPPER 0:
+    (let* ([prg-rom-size (bytes-length bytes-PRG)]
+           [cpu-read-mask : Fixnum
+                          (case prg-rom-size
+                            [(#x4000) #x3FFF]
+                            [(#x8000) #x7FFF]
+                            [else (error "Unexpected PRG ROM size" prg-rom-size)])])
+      (lambda ([addr : Fixnum])
+        (cond
+          [(ufx< addr #x2000)
+           ; OLC: System RAM Address Range, mirrored every 2048
+           (let ([result (unsafe-bytes-ref cpu-ram (ufxand #x7FF addr))])
+             result)]
+          [(ufx< addr #x4000)
+           (let ([result (ppu-register-read addr)])
+             result)]
+          ; TODO also need controller stuff at $4016
+          [(and (ufx>= addr #x8000)
+                (ufx<= addr #xFFFF))
+           ; MAPPER 0: read from PRG ROM
+           (unsafe-bytes-ref bytes-PRG (ufxand cpu-read-mask addr))]
+          [else 0]))))
 
   ; see Bus::cpuWrite
   (: cpu-write (-> Fixnum Fixnum Void))
@@ -339,3 +357,11 @@
     frame-complete?)
 
   (emulator rom-info bus-reset bus-clock))
+
+(: make-emulator Make-Emulator)
+(define (make-emulator rom-path pixel-callback)
+  (let ([cust (make-custodian)])
+    (parameterize ([current-custodian cust])
+      (let ([result (make-emulator2 rom-path pixel-callback)])
+        (custodian-shutdown-all cust)
+        result))))

@@ -96,6 +96,7 @@
              "./roms/nes-roms/Donkey Kong (Japan).nes"
              ;"./roms/nes-roms/Bomberman (USA).nes"
              ;"./roms/nes-roms/Mario Bros. (World).nes"
+             ;"./roms/SMB.nes"
              pixel-callback))
 
 (: bus-reset (-> Void))
