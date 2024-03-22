@@ -3,15 +3,15 @@
 (provide create-nestest-bytes
          parse-reference-log)
 
-(define this-directory
+(define nestest-dir
   (let ([path (syntax-source #'here)])
     (or (and (path? path)
-             (build-path path 'up))
+             (build-path path 'up "roms" "nestest"))
         (error "cannot determine nestest path"))))
 
 (: create-nestest-bytes (-> Bytes))
 (define (create-nestest-bytes)
-  (let* ([port (open-input-file (build-path this-directory "nestest.nes"))]
+  (let* ([port (open-input-file (build-path nestest-dir "nestest.nes"))]
          [bytes (read-bytes 16 port)] ; discard first 16 bytes (the header), I'll deal with this later
          [bytes (read-bytes #x5000 port)])
     (close-input-port port)
@@ -42,7 +42,7 @@
            [ppu (substring str 74 85)]
            [cyc (string-trim (substring str 86))])
       (list pc bytes disasm a x y p sp ppu cyc)))
-  (let* ([port (open-input-file (build-path this-directory "nestest.log"))]
+  (let* ([port (open-input-file (build-path nestest-dir "nestest.log"))]
          [strings (port->list read-line port)])
     (close-input-port port)
     (map parse-one (filter string? strings))))
