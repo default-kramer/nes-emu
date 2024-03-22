@@ -1,6 +1,6 @@
 #lang typed/racket
 
-(provide make-emulator Pixel-Callback
+(provide make-emulator Pixel-Callback Sample-Controller
          (struct-out emulator)
          (struct-out rom-info))
 
@@ -57,10 +57,12 @@
 ; x y index -> Any
 (define-type Pixel-Callback (-> Fixnum Fixnum Fixnum Any))
 
-(define-type Make-Emulator (-> Path-String Pixel-Callback Emulator))
+(define-type Sample-Controller (-> (U Zero One) Fixnum))
+
+(define-type Make-Emulator (-> Path-String Pixel-Callback Sample-Controller Emulator))
 
 (: make-emulator2 Make-Emulator)
-(define (make-emulator2 rom-path pixel-callback)
+(define (make-emulator2 rom-path pixel-callback sample-controller)
 
   ; assuming custodian will take care of cleaning up this port:
   (define port (open-input-file rom-path))
@@ -223,10 +225,21 @@
   (define dma-transfer? : Boolean #f)
   (define dma-delay? : Boolean #f)
 
+  (define controller-0 : Fixnum 0)
+  (define controller-1 : Fixnum 0)
+
   (define-syntax-rule (display* #:port port item ...)
     (begin (display item port)
            ...))
 
+  (define-syntax-rule (cpu-read-controller id)
+    ; WTF? Apparently controller reads only return one byte at a time?
+    ; And the returned data is always 0 or 1...?
+    (let ([result (if (ufx= 0 (ufxand #x80 id)) 0 1)])
+      (set! id (ufxlshift id 1))
+      result))
+
+  (: cpu-read (-> Fixnum Byte))
   (define cpu-read
     ; MAPPER 0:
     (let* ([prg-rom-size (bytes-length bytes-PRG)]
@@ -244,7 +257,10 @@
           [(ufx< addr #x4000)
            (let ([result (ppu-register-read addr)])
              result)]
-          ; TODO also need controller stuff at $4016
+          [(ufx= addr #x4016)
+           (cpu-read-controller controller-0)]
+          [(ufx= addr #x4017)
+           (cpu-read-controller controller-1)]
           [(and (ufx>= addr #x8000)
                 (ufx<= addr #xFFFF))
            ; MAPPER 0: read from PRG ROM
@@ -268,7 +284,11 @@
          (set! dma-addr 0)
          (set! dma-transfer? #t)
          (set! dma-delay? #t))]
-      ; TODO also need controller stuff at $4016
+      ; OLC: "Lock In" controller state at this time
+      [(ufx= addr #x4016)
+       (set! controller-0 (sample-controller 0))]
+      [(ufx= addr #x4017)
+       (set! controller-1 (sample-controller 1))]
       [else
        (void)]))
 
@@ -359,9 +379,9 @@
   (emulator rom-info bus-reset bus-clock))
 
 (: make-emulator Make-Emulator)
-(define (make-emulator rom-path pixel-callback)
+(define (make-emulator rom-path pixel-callback sample-controller)
   (let ([cust (make-custodian)])
     (parameterize ([current-custodian cust])
-      (let ([result (make-emulator2 rom-path pixel-callback)])
+      (let ([result (make-emulator2 rom-path pixel-callback sample-controller)])
         (custodian-shutdown-all cust)
         result))))

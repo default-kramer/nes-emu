@@ -30,7 +30,10 @@
   (define (update-hash x y index)
     (set! bg-hash (ufxand #x3FFFFFFF (ufx+ index (ufx* bg-hash 31)))))
 
-  (define emu (make-emulator rom-path update-hash))
+  (: sample-controller Sample-Controller)
+  (define (sample-controller x) 0)
+
+  (define emu (make-emulator rom-path update-hash sample-controller))
   (define clock (emulator-clock emu))
   (define reset (emulator-reset emu))
 

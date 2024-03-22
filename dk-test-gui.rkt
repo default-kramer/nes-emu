@@ -47,25 +47,42 @@
               (void)
               (do-one-frame buffer)))
 
+        (define (update-controller [code : Any] [release? : Boolean])
+          (define bit (case code
+                        [(right) 1]
+                        [(left)  2]
+                        [(down)  4]
+                        [(up)    8]
+                        [(#\r #\R) #x10] ; Start
+                        [(#\e #\E) #x20] ; Select
+                        [(#\d #\D) #x40] ; B
+                        [(#\f #\F) #x80] ; A
+                        [else #f]))
+          (when bit
+            (set-controller-0 bit release?)))
+
         (let loop ()
           (let ([item (place-channel-get channel)])
-            #;(println (list "GOT SOMETHING" (bytes? item)))
-            (if (bytes? item)
-                (begin #;(set! buffer item)
-                       (do-one-frame item)
-                       (place-channel-put channel 42)
-                       (set! frame-count (ufx+ 1 frame-count))
-                       (when (ufx= 60 frame-count)
-                         (let* ([now (current-inexact-milliseconds)]
-                                [elapsed (unsafe-fl- now last-time)]
-                                [millis-per-frame (unsafe-fl/ elapsed 60.0)]
-                                [fps (unsafe-fl/ 1000.0 millis-per-frame)])
-                           (set! last-time now)
-                           (set! frame-count 0)
-                           (println (list "Emu FPS:" fps))))
-                       #;(place-channel-put channel "did a frame"))
-                (begin #;(place-channel-put channel "got bad arg!")
-                       (void))))
+            (match item
+              [(list 'press keycode)
+               (update-controller keycode #f)]
+              [(list 'release keycode)
+               (update-controller keycode #t)]
+              [x #:when (bytes? item)
+                 (begin #;(set! buffer item)
+                        (do-one-frame item)
+                        (place-channel-put channel 42)
+                        (set! frame-count (ufx+ 1 frame-count))
+                        (when (ufx= 60 frame-count)
+                          (let* ([now (current-inexact-milliseconds)]
+                                 [elapsed (unsafe-fl- now last-time)]
+                                 [millis-per-frame (unsafe-fl/ elapsed 60.0)]
+                                 [fps (unsafe-fl/ 1000.0 millis-per-frame)])
+                            (set! last-time now)
+                            (set! frame-count 0)
+                            (println (list "Emu FPS:" fps)))))]
+              [else
+               (error "Bad channel message?" item)]))
           (loop)))))
 
   (require (submod 'TYPED))
@@ -109,7 +126,22 @@
           (println (list "GOT BACK" item)))
       pict))
 
-  (define frame (new frame% [label "Test"]
+  (define main-frame%
+    (class frame%
+      (super-new)
+      (define/override (on-subwindow-char receiver key-event)
+        ; It would probably be more convenient if we could poll the
+        ; keyboard state on demand instead of watching for events...
+        ; but I don't know if that exists
+        (let* ([code (send key-event get-key-code)]
+               [release? (equal? 'release code)]
+               [message (if release?
+                            (list 'release (send key-event get-key-release-code))
+                            (list 'press code))])
+          (place-channel-put the-place message)))))
+
+  (define frame (new main-frame%
+                     [label "Test"]
                      [width 600]
                      [height 600]))
 
