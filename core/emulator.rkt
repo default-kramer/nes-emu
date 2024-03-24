@@ -1,7 +1,8 @@
 #lang typed/racket
 
 (provide make-emulator Pixel-Callback Sample-Controller
-         (struct-out emulator)
+         validate-rom ; throws, should improve this
+         (struct-out emulator) Emulator
          (struct-out rom-info))
 
 (require "../ufx.rkt"
@@ -56,8 +57,12 @@
 
 ; x y index -> Any
 (define-type Pixel-Callback (-> Fixnum Fixnum Fixnum Any))
+(define empty-pixel-callback : Pixel-Callback
+  (lambda (a b c) (void)))
 
 (define-type Sample-Controller (-> (U Zero One) Fixnum))
+(define empty-sample-controller : Sample-Controller
+  (lambda (x) 0))
 
 (define-type Make-Emulator (-> Path-String Pixel-Callback Sample-Controller Emulator))
 
@@ -385,3 +390,8 @@
       (let ([result (make-emulator2 rom-path pixel-callback sample-controller)])
         (custodian-shutdown-all cust)
         result))))
+
+(: validate-rom (-> Path-String Void))
+(define (validate-rom path)
+  (make-emulator path empty-pixel-callback empty-sample-controller)
+  (void))
